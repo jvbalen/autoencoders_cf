@@ -1,0 +1,15 @@
+# MultiWAE with actual shared weights: 3 layers
+
+build_model.Model = @MultiWAE
+build_model.n_layers = 3
+build_model.slim_path = '/home/jvanbalen/experiments/wae/pruned_slim.npz'
+
+WAE.use_biases = False
+WAE.normalize_inputs = False
+WAE.shared_weights = True
+WAE.keep_prob = 1.0
+WAE.lam = 0.0
+WAE.lr = 3e-4
+
+train.batch_size = 100
+train.n_epochs = 10
