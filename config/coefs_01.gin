@@ -1,0 +1,10 @@
+# Logistic one-vs-rest AE with TFIDF
+
+build_model.Model = @SparsePretrainedLRFromFile
+build_model.ovr = False
+build_model.tfidf = True
+build_model.norm = 'l2'
+
+SparsePretrainedLRFromFile.path = '/Users/jan/experiments/autoencoders/logs/skl/20200213-193629/coefs.npz'
+SparsePretrainedLRFromFile.target_density = 0.0075
+SparsePretrainedLRFromFile.row_nnz = 150
