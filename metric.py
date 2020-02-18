@@ -1,4 +1,5 @@
 import numpy as np
+from scipy.sparse import issparse
 
 
 def ndcg_binary_at_k_batch(x_pred, x_true, k=100):
@@ -6,6 +7,8 @@ def ndcg_binary_at_k_batch(x_pred, x_true, k=100):
     Normalized Discounted Cumulative Gain@k for binary relevance
     ASSUMPTIONS: all the 0's in x_true indicate 0 relevance
     '''
+    x_pred = x_pred.toarray() if issparse(x_pred) else np.array(x_pred)
+
     batch_users = x_pred.shape[0]
     idx_topk_part = np.argpartition(-x_pred, k, axis=1)
     topk_part = x_pred[np.arange(batch_users)[:, np.newaxis],
@@ -24,8 +27,9 @@ def ndcg_binary_at_k_batch(x_pred, x_true, k=100):
 
 
 def recall_at_k_batch(x_pred, x_true, k=100):
-    batch_users = x_pred.shape[0]
+    x_pred = x_pred.toarray() if issparse(x_pred) else np.array(x_pred)
 
+    batch_users = x_pred.shape[0]
     idx = np.argpartition(-x_pred, k, axis=1)
     x_pred_binary = np.zeros_like(x_pred, dtype=bool)
     x_pred_binary[np.arange(batch_users)[:, np.newaxis], idx[:, :k]] = True
