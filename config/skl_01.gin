@@ -1,0 +1,5 @@
+# Weighted Complement Naieve Bayes (WCNB)
+
+build_model.Model = @ComplementNB
+build_model.tfidf = True
+build_model.norm = 'l2'

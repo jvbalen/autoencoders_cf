@@ -1,0 +1,8 @@
+# Logistic one-vs-rest AE with TFIDF
+
+build_model.Model = @LogisticRegression
+build_model.tfidf = False
+build_model.norm = 'l2'
+
+LogisticRegression.fit_intercept = True
+LogisticRegression.C = 1.0
