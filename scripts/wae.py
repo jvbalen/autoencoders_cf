@@ -19,8 +19,6 @@ from models.slim import closed_form_slim
 def build_model(x_train, Model=WAE, n_layers=3, randomize=False, eps=0.01, slim_path=None):
     """Build a wide auto-encoder model with initial weights based on the SLIM
     item-item matrix.
-    First weight will be the sparse SLIM weights with some noise,
-    the others will be the same weights again, scaled by `eps`.
     """
     if slim_path is not None:
         print('Reading pre-computed SLIM matrix from {}...'.format(slim_path))
