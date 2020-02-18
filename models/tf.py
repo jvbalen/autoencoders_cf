@@ -13,13 +13,14 @@ from metric import ndcg_binary_at_k_batch, recall_at_k_batch
 
 
 @gin.configurable
-class MultiWAE(object):
+class WAE(object):
 
-    def __init__(self, inits, use_biases=True, normalize_inputs=False,
-                 shared_weights=False,
+    def __init__(self, w_inits, b_inits=None, use_biases=True,
+                 normalize_inputs=False, shared_weights=False, loss="mse",
                  keep_prob=1.0, lam=0.01, lr=3e-4, random_seed=None):
 
-        self.inits = inits
+        self.w_inits = w_inits
+        self.b_inits = [None] * len(w_inits) if b_inits is None else b_inits
         self.use_biases = use_biases
         self.normalize_inputs = normalize_inputs
         self.shared_weights = shared_weights
@@ -27,14 +28,20 @@ class MultiWAE(object):
         self.lr = lr
         self.random_seed = random_seed
 
+        # loss
+        loss_functions = {"mse": mse,
+                          "nll": neg_ll,
+                          "bce": tf.nn.sigmoid_cross_entropy_with_logits}
+        loss_fn = loss_functions[loss]
+
         # placeholders and weights
-        self.input_ph = tf.placeholder(dtype=tf.float32, shape=[None, inits[0].shape[1]])
+        self.input_ph = tf.placeholder(dtype=tf.float32, shape=[None, w_inits[0].shape[1]])
         self.keep_prob_ph = tf.placeholder_with_default(keep_prob, shape=None)
-        self.construct_weights()
+        self.weights, self.biases = self.construct_weights()
 
         # build graph
         self.logits = self.forward_pass()
-        self.loss = self.loss_fn()
+        self.loss = tf.reduce_mean(loss_fn(self.logits, self.input_ph)) + self.reg_term()
         self.train_op = tf.train.AdamOptimizer(self.lr).minimize(self.loss)
         self.saver = tf.train.Saver()
 
@@ -44,24 +51,25 @@ class MultiWAE(object):
 
     def construct_weights(self,):
 
-        self.weights = []
-        self.biases = []
+        weights = []
+        biases = []
 
         # define weights
-        for i, init in enumerate(self.inits):
+        for i, (w_init, b_init) in enumerate(zip(self.w_inits, self.b_inits)):
             weight_key = "weight_{}to{}".format(i, i+1)
             bias_key = "bias_{}".format(i+1)
 
             if i == 0 or not self.shared_weights:
-                w = sparse_tensor_from_init(init, weight_key=weight_key)
-            self.weights.append(w)
+                w = sparse_tensor_from_init(w_init, name=weight_key)
+            weights.append(w)
 
             if self.use_biases:
-                bias_init = tf.zeros_initializer()
-                self.biases.append(tf.get_variable(
-                    name=bias_key, shape=[init.shape[0]],
-                    initializer=bias_init))
-                tf.summary.histogram(bias_key, self.biases[-1])
+                if b_init is None:
+                    b_init = b_init or np.zeros([w_init.shape[0]])
+                biases.append(tf.Variable(b_init.astype(np.float32), name=bias_key))
+                tf.summary.histogram(bias_key, biases[-1])
+
+        return weights, biases
 
     def forward_pass(self):
         # construct forward graph
@@ -80,44 +88,15 @@ class MultiWAE(object):
 
         return h
 
-    def loss_fn(self):
+    def reg_term(self):
 
-        log_softmax_var = tf.nn.log_softmax(self.logits)
-        # per-user average negative log-likelihood
-        neg_ll = -tf.reduce_mean(tf.reduce_sum(
-            log_softmax_var * self.input_ph, axis=1))
         # apply regularization to weights
         reg = l2_regularizer(self.lam)
         reg_var = apply_regularization(reg, [w.values for w in self.weights] + self.biases)
+
         # tensorflow l2 regularization multiply 0.5 to the l2 norm
         # multiply 2 so that it is back in the same scale
-        loss = neg_ll + 2 * reg_var
-
-        return loss
-
-
-@gin.configurable
-class WAE(MultiWAE):
-
-    def __init__(self, inits, use_biases=True, normalize_inputs=False,
-                 shared_weights=False,
-                 keep_prob=1.0, lam=0.01, lr=3e-4, random_seed=None):
-        super(WAE, self).__init__(inits, use_biases=use_biases, normalize_inputs=normalize_inputs,
-                                  shared_weights=shared_weights,
-                                  keep_prob=keep_prob, lam=lam, lr=lr, random_seed=random_seed)
-
-    def loss_fn(self):
-
-        mse = tf.reduce_mean(tf.square(self.logits - self.input_ph), name="rmse")
-
-        # apply regularization to weights
-        reg = l2_regularizer(self.lam)
-        reg_var = apply_regularization(reg, [w.values for w in self.weights])
-        # tensorflow l2 regularization multiply 0.5 to the l2 norm
-        # multiply 2 so that it is back in the same scale
-        loss = mse + 2 * reg_var
-
-        return loss
+        return 2 * reg_var
 
 
 class MetricLogger(object):
@@ -158,6 +137,17 @@ class MetricLogger(object):
             if step is None:
                 step = len(self.history[name])
             self.summary_writer.add_summary(summary, global_step=step)
+
+
+def neg_ll(logits, labels):
+
+    log_softmax_var = tf.nn.log_softmax(logits)
+    return -tf.reduce_sum(log_softmax_var * labels, axis=1)
+
+
+def mse(logits, labels):
+
+    return tf.square(logits - labels)
 
 
 def evaluate(model, sess, x_val, y_val, batch_size=100, metric_logger=None):
@@ -253,7 +243,7 @@ def train(model, x_train, x_val, y_val, batch_size=100, n_epochs=10, log_dir=Non
 
 
 @gin.configurable
-def sparse_tensor_from_init(init, weight_key='sparse_weight', randomize=False, eps=0.001):
+def sparse_tensor_from_init(init, name='sparse_weight', randomize=False, eps=0.001):
 
     init = init.tocoo()
     init_data = init.data
@@ -261,13 +251,13 @@ def sparse_tensor_from_init(init, weight_key='sparse_weight', randomize=False, e
         init_data = eps * np.random.randn(*init.data.shape)
 
     w_inds = tf.convert_to_tensor(list(zip(init.row, init.col)), dtype=np.int64)
-    w_data = tf.Variable(init_data.astype(np.float32), name=weight_key)
+    w_data = tf.Variable(init_data.astype(np.float32), name=name)
     w = tf.SparseTensor(w_inds, tf.identity(w_data),
                         dense_shape=init.shape)
     w = tf.sparse.reorder(w)  # as suggested here:
     # https://www.tensorflow.org/api_docs/python/tf/sparse/SparseTensor?version=stable
 
     #  summary for tensorboard
-    tf.summary.histogram(weight_key, w_data)
+    tf.summary.histogram(name, w_data)
 
     return w
