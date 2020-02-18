@@ -7,12 +7,24 @@ import gin
 import tensorflow as tf
 from argparse import ArgumentParser
 from scipy.sparse import load_npz
+from sklearn.feature_extraction.text import TfidfTransformer
 
 from data import DataLoader
 from util import prune_global
 
 from models.tf import WAE, train
 from models.slim import closed_form_slim
+
+
+@gin.configurable
+def preprocess(x_train, x_val, tfidf=False):
+
+    if tfidf:
+        trans = TfidfTransformer()
+        x_train = trans.fit_transform(x_train)
+        x_val - trans.transform(x_val)
+
+    return x_train, x_val
 
 
 @gin.configurable
@@ -58,4 +70,6 @@ if __name__ == '__main__':
     if args.cap:
         x_train = x_train[:args.cap]
         x_val, y_val = x_val[:args.cap], y_val[:args.cap]
+
+    x_train, x_val = preprocess(x_train, x_val)
     train(model, x_train, x_val, y_val, log_dir=args.logdir)
