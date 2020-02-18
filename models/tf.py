@@ -41,7 +41,8 @@ class WAE(object):
 
         # build graph
         self.logits = self.forward_pass()
-        self.loss = tf.reduce_mean(loss_fn(self.logits, self.input_ph)) + self.reg_term()
+        self.loss = tf.reduce_mean(
+            loss_fn(labels=self.input_ph, logits=self.logits)) + self.reg_term()
         self.train_op = tf.train.AdamOptimizer(self.lr).minimize(self.loss)
         self.saver = tf.train.Saver()
 
@@ -145,9 +146,9 @@ def neg_ll(logits, labels):
     return -tf.reduce_sum(log_softmax_var * labels, axis=1)
 
 
-def mse(logits, labels):
+def mse(labels, logits):
 
-    return tf.square(logits - labels)
+    return tf.square(labels, logits)
 
 
 def evaluate(model, sess, x_val, y_val, batch_size=100, metric_logger=None):
