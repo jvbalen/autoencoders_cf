@@ -1,6 +1,5 @@
 import numpy as np
 from scipy.sparse import issparse
-from scipy.special import expit
 
 
 def ndcg_binary_at_k_batch(x_pred, x_true, k=100):
@@ -42,15 +41,8 @@ def recall_at_k_batch(x_pred, x_true, k=100):
     return recall
 
 
-def binary_crossentropy_batch(x_pred, x_true, from_logits=True):
+def binary_crossentropy_from_logits(x_pred, x_true):
     x_pred = x_pred.toarray() if issparse(x_pred) else np.array(x_pred)
     x_true = x_true.toarray() if issparse(x_true) else np.array(x_true)
-    if from_logits:
-        x_pred = expit(x_pred)
 
-    print(x_pred.shape, x_true.shape)
-    pos_term = x_true * np.log2(x_pred)
-    neg_term = (1 - x_true) * np.log2(1 - x_pred)
-    bce = -np.mean(pos_term + neg_term, axis=1)
-
-    return bce
+    return np.max(x_pred, 0) - x_pred * x_true + np.log2(1 + 2**(-np.abs(x_pred)))
