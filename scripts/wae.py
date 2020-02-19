@@ -17,14 +17,17 @@ from models.slim import closed_form_slim
 
 
 @gin.configurable
-def preprocess(x_train, x_val, tfidf=False):
+def preprocess(x_train, y_train, x_val, y_val, tfidf=False, tfidf_y=False):
 
     if tfidf:
         trans = TfidfTransformer()
         x_train = trans.fit_transform(x_train)
         x_val - trans.transform(x_val)
+    if tfidf_y:
+        y_train - trans.transform(y_train)
+        y_val - trans.transform(y_val)
 
-    return x_train, x_val
+    return x_train, y_train, x_val, y_val
 
 
 @gin.configurable
@@ -66,10 +69,11 @@ if __name__ == '__main__':
     print('Constructing model...')
     model = build_model(x_train)  # don't cap yet, we want realistic sparsities
 
-    print('Training...')
+    print('Preprocessing...')
     if args.cap:
         x_train = x_train[:args.cap]
         x_val, y_val = x_val[:args.cap], y_val[:args.cap]
+    x_train, y_train, x_val, y_val = preprocess(x_train, x_train.copy(), x_val, y_val)
 
-    x_train, x_val = preprocess(x_train, x_val)
-    train(model, x_train, x_val, y_val, log_dir=args.logdir)
+    print('Training...')
+    train(model, x_train, y_train, x_val, y_val, log_dir=args.logdir)

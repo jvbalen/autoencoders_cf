@@ -36,13 +36,14 @@ class WAE(object):
 
         # placeholders and weights
         self.input_ph = tf.placeholder(dtype=tf.float32, shape=[None, w_inits[0].shape[1]])
+        self.label_ph = tf.placeholder(dtype=tf.float32, shape=[None, w_inits[0].shape[1]])
         self.keep_prob_ph = tf.placeholder_with_default(keep_prob, shape=None)
         self.weights, self.biases = self.construct_weights()
 
         # build graph
         self.logits = self.forward_pass()
         self.loss = tf.reduce_mean(
-            loss_fn(labels=self.input_ph, logits=self.logits)) + self.reg_term()
+            loss_fn(labels=self.label_ph, logits=self.logits)) + self.reg_term()
         self.train_op = tf.train.AdamOptimizer(self.lr).minimize(self.loss)
         self.saver = tf.train.Saver()
 
@@ -140,17 +141,6 @@ class MetricLogger(object):
             self.summary_writer.add_summary(summary, global_step=step)
 
 
-def neg_ll(logits, labels):
-
-    log_softmax_var = tf.nn.log_softmax(logits)
-    return -tf.reduce_sum(log_softmax_var * labels, axis=1)
-
-
-def mse(labels, logits):
-
-    return tf.square(labels, logits)
-
-
 def evaluate(model, sess, x_val, y_val, batch_size=100, metric_logger=None):
     """Evaluate model on observed and unobserved validation data x_val, y_val
     """
@@ -167,11 +157,9 @@ def evaluate(model, sess, x_val, y_val, batch_size=100, metric_logger=None):
         x = x_val[val_inds[start:end]]
         y = y_val[val_inds[start:end]]
 
-        if issparse(x):
-            x = x.toarray()
-        x = x.astype('float32')
-
-        y_pred, ae_loss = sess.run([model.logits, model.loss], feed_dict={model.input_ph: x})
+        feed_dict = {model.input_ph: prepare_batch(x),
+                     model.label_ph: prepare_batch(y)}
+        y_pred, ae_loss = sess.run([model.logits, model.loss], feed_dict=feed_dict)
         # exclude examples from training and validation (if any)
         y_pred[x.nonzero()] = -np.inf
         ndcg_list.append(ndcg_binary_at_k_batch(y_pred, y, k=100))
@@ -189,7 +177,7 @@ def evaluate(model, sess, x_val, y_val, batch_size=100, metric_logger=None):
     return metrics
 
 
-def train_one_epoch(model, sess, x_train,
+def train_one_epoch(model, sess, x_train, y_train,
                     x_val=None, y_val=None, batch_size=100,
                     print_interval=1, metric_logger=None):
 
@@ -198,17 +186,14 @@ def train_one_epoch(model, sess, x_train,
 
     np.random.shuffle(train_inds)
     for i_batch, start in enumerate(range(0, n_train, batch_size)):
+        end = min(start + batch_size, n_train)
         if i_batch % print_interval == 0:
             print('batch {}/{}...'.format(i_batch + 1, int(n_train / batch_size)))
 
-        end = min(start + batch_size, n_train)
         x = x_train[train_inds[start:end]]
-
-        if issparse(x):
-            x = x.toarray()
-        x = x.astype('float32')
-
-        feed_dict = {model.input_ph: x}
+        y = y_train[train_inds[start:end]]
+        feed_dict = {model.input_ph: prepare_batch(x),
+                     model.label_ph: prepare_batch(y)}
         summary_train, _ = sess.run([model.summaries, model.train_op], feed_dict=feed_dict)
 
         if metric_logger is not None:
@@ -216,7 +201,7 @@ def train_one_epoch(model, sess, x_train,
 
 
 @gin.configurable
-def train(model, x_train, x_val, y_val, batch_size=100, n_epochs=10, log_dir=None):
+def train(model, x_train, y_train, x_val, y_val, batch_size=100, n_epochs=10, log_dir=None):
     """Train a tensorflow recommender
 
     TODO: model snapshots (check lines containing "best_ndcg" in Liang's notebook)
@@ -233,7 +218,7 @@ def train(model, x_train, x_val, y_val, batch_size=100, n_epochs=10, log_dir=Non
 
         for epoch in range(n_epochs):
             print('Training. Epoch = {}/{}'.format(epoch + 1, n_epochs))
-            train_one_epoch(model, sess, x_train, batch_size=batch_size,
+            train_one_epoch(model, sess, x_train, y_train, batch_size=batch_size,
                             metric_logger=metric_logger)
 
             metrics = evaluate(model, sess, x_val, y_val, batch_size=batch_size,
@@ -262,3 +247,21 @@ def sparse_tensor_from_init(init, name='sparse_weight', randomize=False, eps=0.0
     tf.summary.histogram(name, w_data)
 
     return w
+
+
+def neg_ll(logits, labels):
+
+    log_softmax_var = tf.nn.log_softmax(logits)
+    return -tf.reduce_sum(log_softmax_var * labels, axis=1)
+
+
+def mse(labels, logits):
+
+    return tf.square(labels, logits)
+
+
+def prepare_batch(x):
+    if issparse(x):
+        x = x.toarray()
+
+    return x.astype('float32')
