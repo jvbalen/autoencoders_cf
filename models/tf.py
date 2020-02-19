@@ -79,7 +79,9 @@ class WAE(object):
             h = tf.nn.l2_normalize(self.input_ph, 1)
         else:
             h = self.input_ph
-        h = tf.nn.dropout(h, rate=1-self.keep_prob_ph)
+
+        if self.keep_prob_ph != 1.0:
+            h = tf.nn.dropout(h, rate=1-self.keep_prob_ph)
 
         for i, w in enumerate(self.weights):
             h = tf.transpose(tf.sparse.sparse_dense_matmul(w, h, adjoint_a=True, adjoint_b=True))
@@ -161,8 +163,9 @@ def evaluate(model, sess, x_val, y_val, batch_size=100, metric_logger=None):
         feed_dict = {model.input_ph: prepare_batch(x),
                      model.label_ph: prepare_batch(y)}
         y_pred, ae_loss = sess.run([model.logits, model.loss], feed_dict=feed_dict)
-        # exclude examples from training and validation (if any)
-        y_pred[x.nonzero()] = -np.inf
+
+        # exclude examples from training and validation (if any) and run rank metrics
+        y_pred[x.nonzero()] = -np.min(y_pred) - 1.0
         ndcg_list.append(ndcg_binary_at_k_batch(y_pred, y, k=100))
         r100_list.append(recall_at_k_batch(y_pred, y, k=100))
         bce_list.append(binary_crossentropy_from_logits(y_pred, y))
@@ -170,7 +173,7 @@ def evaluate(model, sess, x_val, y_val, batch_size=100, metric_logger=None):
 
     val_ndcg = np.concatenate(ndcg_list).mean()  # mean over n_val
     val_r100 = np.concatenate(r100_list).mean()
-    val_bce = np.concatenate(bce_list).nanmean()
+    val_bce = np.concatenate(bce_list).mean()
     val_loss = np.mean(loss_list)  # mean over batches
     metrics = {'val_ndcg': val_ndcg, 'val_r100': val_r100, 'val_bce': val_bce,
                'val_loss': val_loss}
