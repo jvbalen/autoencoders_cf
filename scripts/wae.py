@@ -4,49 +4,11 @@ python wae.py --data ~/data/ml-20m/ --logdir ~/experiments/wae/logs/WAE/ \
     --config config/001.gin
 """
 import gin
-import tensorflow as tf
 from argparse import ArgumentParser
-from scipy.sparse import load_npz
-from sklearn.feature_extraction.text import TfidfTransformer
 
 from data import DataLoader
-from util import prune_global
-
-from models.tf import WAE, train
-from models.slim import closed_form_slim
-
-
-@gin.configurable
-def preprocess(x_train, y_train, x_val, y_val, tfidf=False, tfidf_y=False):
-
-    if tfidf:
-        trans = TfidfTransformer()
-        x_train = trans.fit_transform(x_train)
-        x_val - trans.transform(x_val)
-    if tfidf_y:
-        y_train - trans.transform(y_train)
-        y_val - trans.transform(y_val)
-
-    return x_train, y_train, x_val, y_val
-
-
-@gin.configurable
-def build_model(x_train, Model=WAE, n_layers=3, randomize=False, eps=0.01, slim_path=None):
-    """Build a wide auto-encoder model with initial weights based on the SLIM
-    item-item matrix.
-    """
-    if slim_path is not None:
-        print('Reading pre-computed SLIM matrix from {}...'.format(slim_path))
-        pruned_slim = load_npz(slim_path)
-    else:
-        print('Computing SLIM matrix')
-        slim = closed_form_slim(x_train, l2_reg=500)
-        pruned_slim = prune_global(slim)
-
-    tf.reset_default_graph()
-    model = Model([pruned_slim] * n_layers)
-
-    return model
+from preprocessing import preprocess
+from models.tf import build_model, train
 
 
 if __name__ == '__main__':

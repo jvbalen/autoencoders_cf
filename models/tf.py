@@ -10,6 +10,22 @@ from scipy.sparse import issparse
 from tensorflow.contrib.layers import apply_regularization, l2_regularizer
 
 from metric import ndcg_binary_at_k_batch, recall_at_k_batch, binary_crossentropy_from_logits
+from util import load_weights
+
+
+@gin.configurable
+def build_model(x_train, n_layers=1, weights_path=None,
+                target_density=None, row_nnz=None):
+    """Build a wide auto-encoder model with given initial weights.
+    """
+    weights, biases = load_weights(weights_path)
+    w_inits = [weights] * n_layers
+    b_inits = [biases] * n_layers
+
+    tf.reset_default_graph()
+    model = WAE(w_inits, b_inits=b_inits)
+
+    return model
 
 
 @gin.configurable
@@ -67,7 +83,7 @@ class WAE(object):
 
             if self.use_biases:
                 if b_init is None:
-                    b_init = b_init or np.zeros([w_init.shape[0]])
+                    b_init = np.zeros([w_init.shape[0]])
                 biases.append(tf.Variable(b_init.astype(np.float32), name=bias_key))
                 tf.summary.histogram(bias_key, biases[-1])
 
