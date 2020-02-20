@@ -6,7 +6,7 @@ preprocess.tfidf = True
 
 TFRecommender.Model = @WAE
 TFRecommender.n_layers = 1
-TFRecommender.weights_path = '/home/jvanbalen/experiments/wae/logistic_sparse.npz'
+TFRecommender.weights_path = '/Users/jan/experiments/wae/logistic_sparse.npz'
 
 WAE.loss = "bce"
 WAE.randomize_inits = False

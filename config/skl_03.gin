@@ -1,7 +1,0 @@
-# TFIDF linear regression recommender
-
-build_model.Model = @Ridge
-build_model.ovr = False
-build_model.regression = True
-build_model.tfidf = True
-build_model.norm = 'l2'

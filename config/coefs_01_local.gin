@@ -7,4 +7,4 @@ preprocessing.tfidf = True
 SKLRecommender.Model = @SparsePretrainedLRFromFile
 SKLRecommender.ovr = False
 
-SparsePretrainedLRFromFile.path = '/home/jvanbalen/experiments/logistic_sparse.npz'
+SparsePretrainedLRFromFile.path = '/Users/jan/experiments/logistic_sparse.npz'
