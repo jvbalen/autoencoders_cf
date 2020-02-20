@@ -2,9 +2,34 @@ from argparse import ArgumentParser
 
 import gin
 
-from models.skl import build_model, evaluate, coefs_from_model
+from models.skl import SKLRecommender
 from data import DataLoader
-from util import Logger
+from preprocessing import preprocess
+
+
+def run_experiment(data_path, log_dir, Recommender=SKLRecommender, config_path=None, cap=None):
+
+    # override keyword arguments in gin.configurable modules from config file
+    if config_path:
+        gin.parse_config_file(config_path)
+
+    print('Loading data...')
+    loader = DataLoader(data_path)
+    x_train = loader.load_data('train')
+    x_val, y_val = loader.load_data('validation')
+
+    print('Preprocessing...')
+    if cap:
+        x_train = x_train[:cap]
+        x_val = x_val[:cap]
+        y_val = y_val[:cap]
+    x_train, y_train, x_val, y_val = preprocess(x_train, x_train.copy(), x_val, y_val)
+
+    print('Training...')
+    recommender = Recommender(log_dir)
+    metrics = recommender.train(x_train, y_train, x_val, y_val)
+
+    return metrics
 
 
 if __name__ == '__main__':
@@ -16,28 +41,5 @@ if __name__ == '__main__':
     parser.add_argument('--config', help='path to gin config file', type=str, default=None)
     args = parser.parse_args()
 
-    # override keyword arguments in gin.configurable modules from config file
-    if args.config:
-        gin.parse_config_file(args.config)
-    logger = Logger(args.logdir)
-
-    print('Loading data...')
-    loader = DataLoader(args.data)
-    x_train = loader.load_data('train')
-    x_val, y_val = loader.load_data('validation')
-
-    print('Constructing model...')
-    model = build_model()
-
-    print('Training...')
-    if args.cap:
-        x_train = x_train[:args.cap]
-        x_val = x_val[:args.cap]
-        y_val = y_val[:args.cap]
-    model.fit(x_train, x_train.toarray() > 0.0)
-
-    print('Evaluating...')
-    metrics = evaluate(model, x_val, y_val)
-    logger.log_config(gin.operative_config_str())
-    logger.log_results(metrics, config=gin.operative_config_str())
-    logger.log_coefs(*coefs_from_model(model))
+    metrics = run_experiment(args.data. args.logdir, config_path=args.config, cap=args.cap)
+    print(metrics)
