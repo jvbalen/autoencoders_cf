@@ -17,8 +17,8 @@ from util import load_weights
 class TFRecommender(object):
 
     def __init__(self, log_dir=None, n_layers=1, weights_path=None,
-                 batch_size=100):
-        """Build a wide auto-encoder model with given initial weights.
+                 batch_size=100, n_epochs=10):
+        """Build a TF-based wide auto-encoder model with given initial weights.
 
         TODO:
         - model snapshots (check lines containing "best_ndcg" in Liang's notebook)
@@ -29,10 +29,11 @@ class TFRecommender(object):
 
         tf.reset_default_graph()
         self.model = WAE(w_inits, b_inits=b_inits)
-        self.batch_size = batch_size
         self.log_dir = log_dir
+        self.batch_size = batch_size
+        self.n_epochs = n_epochs
 
-    def train(self, x_train, y_train, x_val, y_val, n_epochs=10):
+    def train(self, x_train, y_train, x_val, y_val):
         """Train a tensorflow recommender"""
         with tf.Session() as sess:
             logger = MetricLogger(self.log_dir, sess) if self.log_dir is not None else None
@@ -43,8 +44,8 @@ class TFRecommender(object):
             metrics = self.evaluate(sess, x_val, y_val, logger=logger)
             print('Validation NDCG = {}'.format(metrics))
 
-            for epoch in range(n_epochs):
-                print('Training. Epoch = {}/{}'.format(epoch + 1, n_epochs))
+            for epoch in range(self.n_epochs):
+                print('Training. Epoch = {}/{}'.format(epoch + 1, self.n_epochs))
                 self.train_one_epoch(sess, x_train, y_train, logger=logger)
 
                 metrics = self.evaluate(sess, x_val, y_val, logger=logger)

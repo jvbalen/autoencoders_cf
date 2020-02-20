@@ -7,11 +7,8 @@ from data import DataLoader
 from preprocessing import preprocess
 
 
-def run_experiment(data_path, log_dir, Recommender=SKLRecommender, config_path=None, cap=None):
-
-    # override keyword arguments in gin.configurable modules from config file
-    if config_path:
-        gin.parse_config_file(config_path)
+@gin.configurable
+def run_experiment(data_path, Recommender=SKLRecommender, log_dir=None, cap=None):
 
     print('Loading data...')
     loader = DataLoader(data_path)
@@ -26,7 +23,7 @@ def run_experiment(data_path, log_dir, Recommender=SKLRecommender, config_path=N
     x_train, y_train, x_val, y_val = preprocess(x_train, x_train.copy(), x_val, y_val)
 
     print('Training...')
-    recommender = Recommender(log_dir)
+    recommender = Recommender(log_dir=log_dir)
     metrics = recommender.train(x_train, y_train, x_val, y_val)
 
     return metrics
@@ -41,5 +38,9 @@ if __name__ == '__main__':
     parser.add_argument('--config', help='path to gin config file', type=str, default=None)
     args = parser.parse_args()
 
-    metrics = run_experiment(args.data. args.logdir, config_path=args.config, cap=args.cap)
+    # override keyword arguments in gin.configurable modules from config file
+    if args.config:
+        gin.parse_config_file(args.config)
+
+    metrics = run_experiment(args.data, log_dir=args.logdir, cap=args.cap)
     print(metrics)
