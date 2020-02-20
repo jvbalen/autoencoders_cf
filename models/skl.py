@@ -11,7 +11,7 @@ from sklearn.naive_bayes import BernoulliNB, ComplementNB
 from sklearn.svm import LinearSVC
 
 from metric import ndcg_binary_at_k_batch, recall_at_k_batch
-from util import prune
+from util import prune, load_weights
 
 # register some external classes to be able to refer to them via gin
 gin.external_configurable(BernoulliNB)
@@ -42,6 +42,7 @@ def build_model(Model=LogisticRegression, ovr=True, tfidf=False, norm=None):
     return Model
 
 
+@gin.configurable
 class SparsePretrainedLR(object):
 
     def __init__(self, coefs, intercepts=None, target_density=None, row_nnz=None):
@@ -62,8 +63,11 @@ class SparsePretrainedLR(object):
     def fit(self, *args):
         pass
 
+    def predict_logits(self, x):
+        return np.asarray(x @ self.coefs + self.intercepts)
+
     def predict_proba(self, x):
-        return expit(x @ self.coefs + self.intercepts)
+        return expit(self.predict_logits(x))
 
 
 @gin.configurable
@@ -71,8 +75,8 @@ class SparsePretrainedLRFromFile(SparsePretrainedLR):
 
     def __init__(self, path=None, target_density=None, row_nnz=None):
         """Helper class to make SparsePretrainedLR a bit more gin-friendly"""
-        data = np.load(path, allow_pickle=True)
-        super().__init__(data['coefs'], data['intercepts'],
+        coefs, intercepts = load_weights(path)
+        super().__init__(coefs, intercepts,
                          target_density=target_density, row_nnz=row_nnz)
 
 
