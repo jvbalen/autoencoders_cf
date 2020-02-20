@@ -14,29 +14,119 @@ from util import load_weights
 
 
 @gin.configurable
-def build_model(x_train, n_layers=1, weights_path=None,
-                target_density=None, row_nnz=None):
-    """Build a wide auto-encoder model with given initial weights.
-    """
-    weights, biases = load_weights(weights_path)
-    w_inits = [weights] * n_layers
-    b_inits = [biases] * n_layers
+class TFRecommender(object):
 
-    tf.reset_default_graph()
-    model = WAE(w_inits, b_inits=b_inits)
+    def __init__(self, log_dir=None, n_layers=1, weights_path=None,
+                 batch_size=100):
+        """Build a wide auto-encoder model with given initial weights.
 
-    return model
+        TODO:
+        - model snapshots (check lines containing "best_ndcg" in Liang's notebook)
+        """
+        weights, biases = load_weights(weights_path)
+        w_inits = [weights] * n_layers
+        b_inits = [biases] * n_layers
+
+        tf.reset_default_graph()
+        self.model = WAE(w_inits, b_inits=b_inits)
+        self.batch_size = batch_size
+        self.log_dir = log_dir
+
+    def train(self, x_train, y_train, x_val, y_val, n_epochs=10):
+        """Train a tensorflow recommender"""
+        with tf.Session() as sess:
+            logger = MetricLogger(self.log_dir, sess) if self.log_dir is not None else None
+
+            init = tf.global_variables_initializer()
+            sess.run(init)
+
+            metrics = self.evaluate(sess, x_val, y_val, logger=logger)
+            print('Validation NDCG = {}'.format(metrics))
+
+            for epoch in range(n_epochs):
+                print('Training. Epoch = {}/{}'.format(epoch + 1, n_epochs))
+                self.train_one_epoch(sess, x_train, y_train, logger=logger)
+
+                metrics = self.evaluate(sess, x_val, y_val, logger=logger)
+                print('Validation NDCG = {}'.format(metrics))
+
+        return metrics
+
+    def train_one_epoch(self, sess, x_train, y_train, x_val=None, y_val=None,
+                        print_interval=1, logger=None):
+
+        n_train = x_train.shape[0]
+        train_inds = list(range(n_train))
+
+        np.random.shuffle(train_inds)
+        for i_batch, start in enumerate(range(0, n_train, self.batch_size)):
+            end = min(start + self.batch_size, n_train)
+            if i_batch % print_interval == 0:
+                print('batch {}/{}...'.format(i_batch + 1, int(n_train / self.batch_size)))
+
+            x = x_train[train_inds[start:end]]
+            y = y_train[train_inds[start:end]]
+            feed_dict = {self.model.input_ph: prepare_batch(x),
+                         self.model.label_ph: prepare_batch(y)}
+            summary_train, _ = sess.run([self.model.summaries, self.model.train_op],
+                                        feed_dict=feed_dict)
+
+            if logger is not None:
+                logger.log_summaries({'summary': summary_train})
+
+    def evaluate(self, sess, x_val, y_val, logger=None):
+        """Evaluate model on observed and unobserved validation data x_val, y_val
+        """
+        n_val = x_val.shape[0]
+        val_inds = list(range(n_val))
+
+        loss_list = []
+        ndcg_list = []
+        r100_list = []
+        bce_list = []
+        for i_batch, start in enumerate(range(0, n_val, self.batch_size)):
+            print('validation batch {}/{}...'.format(i_batch + 1, int(n_val / self.batch_size)))
+
+            end = min(start + self.batch_size, n_val)
+            x = x_val[val_inds[start:end]]
+            y = y_val[val_inds[start:end]]
+
+            feed_dict = {self.model.input_ph: prepare_batch(x),
+                         self.model.label_ph: prepare_batch(y)}
+            y_pred, ae_loss = sess.run([self.model.logits, self.model.loss],
+                                       feed_dict=feed_dict)
+
+            # exclude examples from training and validation (if any) and run rank metrics
+            y_pred[x.nonzero()] = -np.min(y_pred) - 1.0
+            ndcg_list.append(ndcg_binary_at_k_batch(y_pred, y, k=100))
+            r100_list.append(recall_at_k_batch(y_pred, y, k=100))
+            bce_list.append(binary_crossentropy_from_logits(y_pred, y))
+            loss_list.append(ae_loss)
+
+        val_ndcg = np.concatenate(ndcg_list).mean()  # mean over n_val
+        val_r100 = np.concatenate(r100_list).mean()
+        val_bce = np.concatenate(bce_list).mean()
+        val_loss = np.mean(loss_list)  # mean over batches
+
+        metrics = {'val_ndcg': val_ndcg, 'val_r100': val_r100, 'val_bce': val_bce,
+                   'val_loss': val_loss}
+        if logger is not None:
+            logger.log_metrics(metrics)
+
+        return metrics
 
 
 @gin.configurable
 class WAE(object):
 
-    def __init__(self, w_inits, b_inits=None, use_biases=True,
+    def __init__(self, w_inits, b_inits=None,
+                 randomize_inits=False, use_biases=True,
                  normalize_inputs=False, shared_weights=False, loss="mse",
                  keep_prob=1.0, lam=0.01, lr=3e-4, random_seed=None):
 
         self.w_inits = w_inits
         self.b_inits = [None] * len(w_inits) if b_inits is None else b_inits
+        self.randomize_inits = randomize_inits
         self.use_biases = use_biases
         self.normalize_inputs = normalize_inputs
         self.shared_weights = shared_weights
@@ -78,7 +168,8 @@ class WAE(object):
             bias_key = "bias_{}".format(i+1)
 
             if i == 0 or not self.shared_weights:
-                w = sparse_tensor_from_init(w_init, name=weight_key)
+                w = sparse_tensor_from_init(w_init, randomize=self.randomize_inits,
+                                            name=weight_key)
             weights.append(w)
 
             if self.use_biases:
@@ -159,99 +250,6 @@ class MetricLogger(object):
             self.summary_writer.add_summary(summary, global_step=step)
 
 
-def evaluate(model, sess, x_val, y_val, batch_size=100, metric_logger=None):
-    """Evaluate model on observed and unobserved validation data x_val, y_val
-    """
-    n_val = x_val.shape[0]
-    val_inds = list(range(n_val))
-
-    loss_list = []
-    ndcg_list = []
-    r100_list = []
-    bce_list = []
-    for i_batch, start in enumerate(range(0, n_val, batch_size)):
-        print('validation batch {}/{}...'.format(i_batch + 1, int(n_val / batch_size)))
-
-        end = min(start + batch_size, n_val)
-        x = x_val[val_inds[start:end]]
-        y = y_val[val_inds[start:end]]
-
-        feed_dict = {model.input_ph: prepare_batch(x),
-                     model.label_ph: prepare_batch(y)}
-        y_pred, ae_loss = sess.run([model.logits, model.loss], feed_dict=feed_dict)
-
-        # exclude examples from training and validation (if any) and run rank metrics
-        y_pred[x.nonzero()] = -np.min(y_pred) - 1.0
-        ndcg_list.append(ndcg_binary_at_k_batch(y_pred, y, k=100))
-        r100_list.append(recall_at_k_batch(y_pred, y, k=100))
-        bce_list.append(binary_crossentropy_from_logits(y_pred, y))
-        loss_list.append(ae_loss)
-
-    val_ndcg = np.concatenate(ndcg_list).mean()  # mean over n_val
-    val_r100 = np.concatenate(r100_list).mean()
-    val_bce = np.concatenate(bce_list).mean()
-    val_loss = np.mean(loss_list)  # mean over batches
-    metrics = {'val_ndcg': val_ndcg, 'val_r100': val_r100, 'val_bce': val_bce,
-               'val_loss': val_loss}
-
-    if metric_logger is not None:
-        metric_logger.log_metrics(metrics)
-
-    return metrics
-
-
-def train_one_epoch(model, sess, x_train, y_train,
-                    x_val=None, y_val=None, batch_size=100,
-                    print_interval=1, metric_logger=None):
-
-    n_train = x_train.shape[0]
-    train_inds = list(range(n_train))
-
-    np.random.shuffle(train_inds)
-    for i_batch, start in enumerate(range(0, n_train, batch_size)):
-        end = min(start + batch_size, n_train)
-        if i_batch % print_interval == 0:
-            print('batch {}/{}...'.format(i_batch + 1, int(n_train / batch_size)))
-
-        x = x_train[train_inds[start:end]]
-        y = y_train[train_inds[start:end]]
-        feed_dict = {model.input_ph: prepare_batch(x),
-                     model.label_ph: prepare_batch(y)}
-        summary_train, _ = sess.run([model.summaries, model.train_op], feed_dict=feed_dict)
-
-        if metric_logger is not None:
-            metric_logger.log_summaries({'summary': summary_train})
-
-
-@gin.configurable
-def train(model, x_train, y_train, x_val, y_val, batch_size=100, n_epochs=10, log_dir=None):
-    """Train a tensorflow recommender
-
-    TODO: model snapshots (check lines containing "best_ndcg" in Liang's notebook)
-    """
-
-    with tf.Session() as sess:
-        metric_logger = MetricLogger(log_dir, sess) if log_dir is not None else None
-
-        init = tf.global_variables_initializer()
-        sess.run(init)
-
-        metrics = evaluate(model, sess, x_val, y_val, metric_logger=metric_logger)
-        print('Validation NDCG = {}'.format(metrics))
-
-        for epoch in range(n_epochs):
-            print('Training. Epoch = {}/{}'.format(epoch + 1, n_epochs))
-            train_one_epoch(model, sess, x_train, y_train, batch_size=batch_size,
-                            metric_logger=metric_logger)
-
-            metrics = evaluate(model, sess, x_val, y_val, batch_size=batch_size,
-                               metric_logger=metric_logger)
-            print('Validation NDCG = {}'.format(metrics))
-
-    return metrics
-
-
-@gin.configurable
 def sparse_tensor_from_init(init, name='sparse_weight', randomize=False, eps=0.001):
 
     init = init.tocoo()
