@@ -3,12 +3,13 @@ from argparse import ArgumentParser
 import gin
 
 from models.skl import SKLRecommender
+from models.tf import TFRecommender
 from data import DataLoader
 from preprocessing import preprocess
 
 
 @gin.configurable
-def run_experiment(data_path, Recommender=SKLRecommender, log_dir=None, cap=None):
+def experiment(data_path, Recommender=SKLRecommender, log_dir=None, cap=None):
 
     print('Loading data...')
     loader = DataLoader(data_path)
@@ -42,5 +43,5 @@ if __name__ == '__main__':
     if args.config:
         gin.parse_config_file(args.config)
 
-    metrics = run_experiment(args.data, log_dir=args.logdir, cap=args.cap)
+    metrics = experiment(args.data, log_dir=args.logdir, cap=args.cap)
     print(metrics)

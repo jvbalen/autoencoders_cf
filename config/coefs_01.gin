@@ -2,9 +2,10 @@
 
 run_experiment.Recommender = @SKLRecommender
 
-preprocessing.tfidf = True
+preprocess.tfidf = True
+preprocess.norm = 'l2'
 
-SKLRecommender.Model = @SparsePretrainedLRFromFile
+SKLRecommender.Model = @LogisticRegressionFromFile
 SKLRecommender.ovr = False
 
-SparsePretrainedLRFromFile.path = '/home/jvanbalen/experiments/logistic_sparse.npz'
+LogisticRegressionFromFile.path = '/home/jvanbalen/experiments/wae/logistic.npz'

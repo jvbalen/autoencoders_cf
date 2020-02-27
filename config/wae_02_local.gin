@@ -5,4 +5,10 @@ preprocess.tfidf = True
 preprocess.norm = 'l2'
 
 TFRecommender.weights_path = '/Users/jan/experiments/wae/logistic_pruned_01.npz'
-TFRecommender.n_epochs = 0
+TFRecommender.n_layers = 1
+TFRecommender.n_epochs = 10
+
+WAE.loss = "bce"
+WAE.Optimizer = @GradientDescentOptimizer
+WAE.lr = 3e-4
+WAE.lam = 0.0
