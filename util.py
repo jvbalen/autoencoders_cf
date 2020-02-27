@@ -7,12 +7,13 @@ from scipy.sparse import csr_matrix, issparse, vstack, save_npz, load_npz
 
 class Logger(object):
 
-    def __init__(self, base_dir):
+    def __init__(self, base_dir, verbose=True):
         """Class that holds methods for logging config, results and model coefficients
         to a common directory.
         """
         timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
         self.log_dir = os.path.join(base_dir, timestamp)
+        self.verbose = verbose
         os.makedirs(self.log_dir)
 
     def log_config(self, config):
@@ -20,7 +21,10 @@ class Logger(object):
         with open(config_file, 'w') as f:
             f.write(config)
 
-    def log_results(self, metrics, config=None):
+    def log_metrics(self, metrics, config=None):
+        if self.verbose:
+            print(f'Validation results: {metrics}')
+
         results_file = os.path.join(self.log_dir, 'results.csv')
         with open(results_file, 'w') as f:
             for metric, value in metrics.items():
@@ -145,12 +149,19 @@ def load_weights(path):
         # look for sparse matrix
         weights = load_npz(path)
         # check if the same file also contains the intercepts (see `save_weights`)
-        biases = np.load(path).get('biases', None)
+        try:
+            biases = np.load(path).get('biases', None)
+        except KeyError:
+            biases = np.load(path).get('intercepts', None)
     except ValueError:
         # look for dense arrays
         data = np.load(path)
-        path = data['weights']
-        biases = data.get('biases', None)
+        try:
+            weights = data['weights']
+            biases = data.get('biases', None)
+        except KeyError:
+            weights = data['coefs']
+            biases = data.get('intercepts', None)
 
     return weights, biases
 
@@ -160,4 +171,3 @@ def sparse_info(m):
     print("{} of {}".format(type(m), m.dtype))
     print("shape = {}, nnz = {}".format(m.shape, m.nnz))
     print("density = {:.3}".format(m.nnz / np.prod(m.shape)))
-
