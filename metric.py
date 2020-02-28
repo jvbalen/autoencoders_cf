@@ -49,3 +49,10 @@ def binary_crossentropy_from_logits(x_pred, x_true):
     bce = np.max(x_pred, 0) - x_pred * x_true + log_sigmoid_abs
 
     return bce
+
+
+def count_finite(x_pred, x_true=None):
+
+    x_pred = x_pred.toarray() if issparse(x_pred) else np.array(x_pred)
+
+    return np.mean(np.isfinite(x_pred), axis=1)

@@ -1,7 +1,8 @@
 import gin
 import numpy as np
 
-from metric import ndcg_binary_at_k_batch, recall_at_k_batch, binary_crossentropy_from_logits
+from metric import ndcg_binary_at_k_batch, recall_at_k_batch, \
+    binary_crossentropy_from_logits, count_finite
 from util import Logger
 
 
@@ -28,7 +29,7 @@ class BaseRecommender(object):
         n_val = x_val.shape[0]
         val_inds = list(range(n_val))
 
-        isfin_list = []
+        fin_list = []
         loss_list = []
         ndcg_list = []
         r100_list = []
@@ -41,7 +42,7 @@ class BaseRecommender(object):
             y = y_val[val_inds[start:end]]
 
             y_pred, loss = self.predict(x, y)
-            isfin_list.append(np.isfinite(y_pred))
+            fin_list.append(count_finite(y_pred))
 
             # exclude examples from training and validation (if any) and compute rank metrics
             y_pred[x.nonzero()] = np.min(y_pred)
@@ -50,7 +51,7 @@ class BaseRecommender(object):
             bce_list.append(binary_crossentropy_from_logits(y_pred, y))
             loss_list.append(loss)
 
-        val_isfin = np.concatenate(isfin_list).mean()  # mean over n_val
+        val_fin = np.concatenate(fin_list).mean()  # mean over n_val
         val_ndcg = np.concatenate(ndcg_list).mean()
         val_r100 = np.concatenate(r100_list).mean()
         val_bce = np.concatenate(bce_list).mean()
@@ -58,7 +59,7 @@ class BaseRecommender(object):
 
         metrics = {'val_ndcg': val_ndcg, 'val_r100': val_r100,
                    'val_bce': val_bce, 'val_loss': val_loss,
-                   'isfin': val_isfin}
+                   'isfin': val_fin}
         self.logger.log_metrics(metrics, config=gin.operative_config_str())
 
         return metrics
