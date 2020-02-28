@@ -1,0 +1,16 @@
+# 1-layer WAE with NLL loss, bias and normalization
+
+run_experiment.Recommender = @TFRecommender
+
+preprocess.tfidf = True
+
+TFRecommender.Model = @WAE
+TFRecommender.weights_path = '/home/jvanbalen/experiments/wae/logistic_sparse.npz'
+
+WAE.loss = "bce"
+WAE.randomize_inits = False
+WAE.use_biases = True
+WAE.normalize_inputs = True
+WAE.keep_prob = 1.0
+WAE.lam = 0.0
+WAE.lr = 3e-4

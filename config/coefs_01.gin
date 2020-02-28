@@ -1,0 +1,11 @@
+# Sparse Pretrained Logistic Regression recommender with TFIDF
+
+run_experiment.Recommender = @SKLRecommender
+
+preprocess.tfidf = True
+preprocess.norm = 'l2'
+
+SKLRecommender.Model = @LogisticRegressionFromFile
+SKLRecommender.ovr = False
+
+LogisticRegressionFromFile.path = '/home/jvanbalen/experiments/wae/logistic.npz'

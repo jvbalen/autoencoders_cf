@@ -1,25 +1,108 @@
 
-import os
-import datetime
 from collections import defaultdict
 
 import gin
 import numpy as np
 import tensorflow as tf
-from scipy.sparse import issparse
+from scipy.sparse import issparse, eye
 from tensorflow.contrib.layers import apply_regularization, l2_regularizer
 
-from metric import ndcg_binary_at_k_batch, recall_at_k_batch
+from models.base import BaseRecommender
+from util import Logger, load_weights
+
+gin.external_configurable(tf.train.GradientDescentOptimizer)
+gin.external_configurable(tf.train.AdamOptimizer)
 
 
 @gin.configurable
-class MultiWAE(object):
+class TFRecommender(BaseRecommender):
 
-    def __init__(self, inits, use_biases=True, normalize_inputs=False,
-                 shared_weights=False,
-                 keep_prob=1.0, lam=0.01, lr=3e-4, random_seed=None):
+    def __init__(self, log_dir=None, weights_path=None, n_layers=1,
+                 batch_size=100, n_epochs=10):
+        """Build a TF-based wide auto-encoder model with given initial weights.
 
-        self.inits = inits
+        TODO:
+        - model snapshots (check lines containing "best_ndcg" in Liang's notebook)
+        """
+        weights, biases = load_weights(weights_path)
+        w_inits = [weights] * n_layers
+        b_inits = [biases] * n_layers
+
+        tf.reset_default_graph()
+        self.model = WAE(w_inits, b_inits=b_inits)
+        self.log_dir = log_dir
+        self.batch_size = batch_size
+        self.n_epochs = n_epochs
+
+        self.logger = None
+        self.sess = None
+
+    def train(self, x_train, y_train, x_val, y_val):
+        """Train a tensorflow recommender"""
+        with tf.Session() as self.sess:
+            self.logger = TFLogger(self.log_dir, self.sess)
+            self.logger.log_config(gin.operative_config_str())
+
+            init = tf.global_variables_initializer()
+            self.sess.run(init)
+
+            metrics = self.evaluate(x_val, y_val)
+            for epoch in range(self.n_epochs):
+                print(f'Training. Epoch = {epoch + 1}/{self.n_epochs}')
+                self.train_one_epoch(x_train, y_train)
+                metrics = self.evaluate(x_val, y_val)
+
+        return metrics
+
+    def train_one_epoch(self, x_train, y_train, x_val=None, y_val=None,
+                        print_interval=1):
+
+        n_train = x_train.shape[0]
+        train_inds = list(range(n_train))
+
+        np.random.shuffle(train_inds)
+        for i_batch, start in enumerate(range(0, n_train, self.batch_size)):
+            end = min(start + self.batch_size, n_train)
+            if i_batch % print_interval == 0:
+                print('batch {}/{}...'.format(i_batch + 1, int(n_train / self.batch_size)))
+
+            x = x_train[train_inds[start:end]]
+            y = y_train[train_inds[start:end]]
+            feed_dict = {self.model.input_ph: prepare_batch(x),
+                         self.model.label_ph: prepare_batch(y)}
+            summary_train, _ = self.sess.run([self.model.summaries, self.model.train_op],
+                                             feed_dict=feed_dict)
+            self.logger.log_summaries({'summary': summary_train})
+
+    def predict(self, x, y=None):
+        """Predict scores.
+        If y is not None, also return a loss.
+        """
+        if y is not None:
+            feed_dict = {self.model.input_ph: prepare_batch(x),
+                         self.model.label_ph: prepare_batch(y)}
+            y_pred, loss = self.sess.run([self.model.logits, self.model.loss],
+                                         feed_dict=feed_dict)
+        else:
+            feed_dict = {self.model.input_ph: prepare_batch(x)}
+            y_pred = self.sess.run(self.model.logits, feed_dict=feed_dict)
+            loss = None
+
+        return y_pred, loss
+
+
+@gin.configurable
+class WAE(object):
+
+    def __init__(self, w_inits, b_inits=None,
+                 randomize_inits=False, use_biases=True,
+                 normalize_inputs=False, shared_weights=False, loss="mse",
+                 keep_prob=1.0, lam=0.01, lr=3e-4, random_seed=None,
+                 Optimizer=tf.train.AdamOptimizer):
+
+        self.w_inits = w_inits
+        self.b_inits = [None] * len(w_inits) if b_inits is None else b_inits
+        self.randomize_inits = randomize_inits
         self.use_biases = use_biases
         self.normalize_inputs = normalize_inputs
         self.shared_weights = shared_weights
@@ -27,41 +110,53 @@ class MultiWAE(object):
         self.lr = lr
         self.random_seed = random_seed
 
+        # loss
+        loss_functions = {"mse": mse,
+                          "nll": neg_ll,
+                          "bce": tf.nn.sigmoid_cross_entropy_with_logits}
+        loss_fn = loss_functions[loss]
+
         # placeholders and weights
-        self.input_ph = tf.placeholder(dtype=tf.float32, shape=[None, inits[0].shape[1]])
+        self.input_ph = tf.placeholder(dtype=tf.float32, shape=[None, w_inits[0].shape[1]])
+        self.label_ph = tf.placeholder(dtype=tf.float32, shape=[None, w_inits[0].shape[1]])
         self.keep_prob_ph = tf.placeholder_with_default(keep_prob, shape=None)
-        self.construct_weights()
+        self.weights, self.biases = self.construct_weights()
 
         # build graph
         self.logits = self.forward_pass()
-        self.loss = self.loss_fn()
-        self.train_op = tf.train.AdamOptimizer(self.lr).minimize(self.loss)
+        self.loss = tf.reduce_mean(
+            loss_fn(labels=self.label_ph, logits=self.logits)) + self.reg_term()
+        self.train_op = Optimizer(self.lr).minimize(self.loss)
         self.saver = tf.train.Saver()
 
         # add summary statistics
         tf.summary.scalar('loss', self.loss)
         self.summaries = tf.summary.merge_all()
 
-    def construct_weights(self,):
+    def construct_weights(self):
 
-        self.weights = []
-        self.biases = []
+        weights = []
+        biases = []
 
         # define weights
-        for i, init in enumerate(self.inits):
+        for i, (w_init, b_init) in enumerate(zip(self.w_inits, self.b_inits)):
             weight_key = "weight_{}to{}".format(i, i+1)
             bias_key = "bias_{}".format(i+1)
 
             if i == 0 or not self.shared_weights:
-                w = sparse_tensor_from_init(init, weight_key=weight_key)
-            self.weights.append(w)
+                w = sparse_tensor_from_init(w_init, randomize=self.randomize_inits,
+                                            zero_diag=True, name=weight_key)
+            weights.append(w)
 
             if self.use_biases:
-                bias_init = tf.zeros_initializer()
-                self.biases.append(tf.get_variable(
-                    name=bias_key, shape=[init.shape[0]],
-                    initializer=bias_init))
-                tf.summary.histogram(bias_key, self.biases[-1])
+                if b_init is None:
+                    b_init = np.zeros([w_init.shape[0]])
+                elif self.randomize_inits:
+                    b_init = add_noise(b_init)
+                biases.append(tf.Variable(b_init.astype(np.float32), name=bias_key))
+                tf.summary.histogram(bias_key, biases[-1])
+
+        return weights, biases
 
     def forward_pass(self):
         # construct forward graph
@@ -69,7 +164,9 @@ class MultiWAE(object):
             h = tf.nn.l2_normalize(self.input_ph, 1)
         else:
             h = self.input_ph
-        h = tf.nn.dropout(h, rate=1-self.keep_prob_ph)
+
+        if self.keep_prob_ph != 1.0:
+            h = tf.nn.dropout(h, rate=1-self.keep_prob_ph)
 
         for i, w in enumerate(self.weights):
             h = tf.transpose(tf.sparse.sparse_dense_matmul(w, h, adjoint_a=True, adjoint_b=True))
@@ -80,73 +177,42 @@ class MultiWAE(object):
 
         return h
 
-    def loss_fn(self):
+    def reg_term(self):
 
-        log_softmax_var = tf.nn.log_softmax(self.logits)
-        # per-user average negative log-likelihood
-        neg_ll = -tf.reduce_mean(tf.reduce_sum(
-            log_softmax_var * self.input_ph, axis=1))
         # apply regularization to weights
         reg = l2_regularizer(self.lam)
         reg_var = apply_regularization(reg, [w.values for w in self.weights] + self.biases)
+
         # tensorflow l2 regularization multiply 0.5 to the l2 norm
         # multiply 2 so that it is back in the same scale
-        loss = neg_ll + 2 * reg_var
-
-        return loss
+        return 2 * reg_var
 
 
-@gin.configurable
-class WAE(MultiWAE):
+class TFLogger(Logger):
 
-    def __init__(self, inits, use_biases=True, normalize_inputs=False,
-                 shared_weights=False,
-                 keep_prob=1.0, lam=0.01, lr=3e-4, random_seed=None):
-        super(WAE, self).__init__(inits, use_biases=use_biases, normalize_inputs=normalize_inputs,
-                                  shared_weights=shared_weights,
-                                  keep_prob=keep_prob, lam=lam, lr=lr, random_seed=random_seed)
-
-    def loss_fn(self):
-
-        mse = tf.reduce_mean(tf.square(self.logits - self.input_ph), name="rmse")
-
-        # apply regularization to weights
-        reg = l2_regularizer(self.lam)
-        reg_var = apply_regularization(reg, [w.values for w in self.weights])
-        # tensorflow l2 regularization multiply 0.5 to the l2 norm
-        # multiply 2 so that it is back in the same scale
-        loss = mse + 2 * reg_var
-
-        return loss
-
-
-class MetricLogger(object):
-
-    def __init__(self, base_dir, sess, metric_name='ndcg_at_k_val'):
+    def __init__(self, base_dir, sess):
+        """Logger class that also writes summaries to Tensorboard"""
+        super().__init__(base_dir)
 
         self.sess = sess
-        self.metric_name = metric_name
-
-        timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-        log_dir = os.path.join(base_dir, timestamp)
-
-        self.metrics = {}
+        self.variables = {}
         self.summaries = {}
-        self.summary_writer = tf.summary.FileWriter(log_dir, graph=tf.get_default_graph())
-
+        self.summary_writer = tf.summary.FileWriter(self.log_dir, graph=tf.get_default_graph())
         self.history = defaultdict(list)
 
-    def log_metrics(self, metrics):
+    def log_metrics(self, metrics, config=None):
         """Log a dictionary of metrics to a tf.summary.FileWriter
         """
+        super().log_metrics(metrics, config=config)
+
         feed_dict = {}
         summaries = []
         for name, value in metrics.items():
-            if name not in self.metrics:
-                self.metrics[name] = tf.Variable(0.0, name=name)
-                self.summaries[name] = tf.summary.scalar(name, self.metrics[name])
+            if name not in self.variables:
+                self.variables[name] = tf.Variable(0.0, name=name)
+                self.summaries[name] = tf.summary.scalar(name, self.variables[name])
             summaries.append(self.summaries[name])
-            feed_dict[self.metrics[name]] = value
+            feed_dict[self.variables[name]] = value
         summaries = self.sess.run(summaries, feed_dict=feed_dict)
         summaries_dict = dict(zip(metrics.keys(), summaries))
         self.log_summaries(summaries_dict)
@@ -160,114 +226,49 @@ class MetricLogger(object):
             self.summary_writer.add_summary(summary, global_step=step)
 
 
-def evaluate(model, sess, x_val, y_val, batch_size=100, metric_logger=None):
-    """Evaluate model on observed and unobserved validation data x_val, y_val
-    """
-    n_val = x_val.shape[0]
-    val_inds = list(range(n_val))
-
-    loss_list = []
-    ndcg_list = []
-    r100_list = []
-    for i_batch, start in enumerate(range(0, n_val, batch_size)):
-        print('validation batch {}/{}...'.format(i_batch + 1, int(n_val / batch_size)))
-
-        end = min(start + batch_size, n_val)
-        x = x_val[val_inds[start:end]]
-        y = y_val[val_inds[start:end]]
-
-        if issparse(x):
-            x = x.toarray()
-        x = x.astype('float32')
-
-        y_pred, ae_loss = sess.run([model.logits, model.loss], feed_dict={model.input_ph: x})
-        # exclude examples from training and validation (if any)
-        y_pred[x.nonzero()] = -np.inf
-        ndcg_list.append(ndcg_binary_at_k_batch(y_pred, y, k=100))
-        r100_list.append(recall_at_k_batch(y_pred, y, k=100))
-        loss_list.append(ae_loss)
-
-    val_ndcg = np.concatenate(ndcg_list).mean()  # mean over n_val
-    val_r100 = np.concatenate(r100_list).mean()  # mean over n_val
-    val_loss = np.mean(loss_list)  # mean over batches
-    metrics = {'val_ndcg': val_ndcg, 'val_r100': val_r100, 'val_loss': val_loss}
-
-    if metric_logger is not None:
-        metric_logger.log_metrics(metrics)
-
-    return metrics
-
-
-def train_one_epoch(model, sess, x_train,
-                    x_val=None, y_val=None, batch_size=100,
-                    print_interval=1, metric_logger=None):
-
-    n_train = x_train.shape[0]
-    train_inds = list(range(n_train))
-
-    np.random.shuffle(train_inds)
-    for i_batch, start in enumerate(range(0, n_train, batch_size)):
-        if i_batch % print_interval == 0:
-            print('batch {}/{}...'.format(i_batch + 1, int(n_train / batch_size)))
-
-        end = min(start + batch_size, n_train)
-        x = x_train[train_inds[start:end]]
-
-        if issparse(x):
-            x = x.toarray()
-        x = x.astype('float32')
-
-        feed_dict = {model.input_ph: x}
-        summary_train, _ = sess.run([model.summaries, model.train_op], feed_dict=feed_dict)
-
-        if metric_logger is not None:
-            metric_logger.log_summaries({'summary': summary_train})
-
-
-@gin.configurable
-def train(model, x_train, x_val, y_val, batch_size=100, n_epochs=10, log_dir=None):
-    """Train a tensorflow recommender
-
-    TODO: model snapshots (check lines containing "best_ndcg" in Liang's notebook)
-    """
-
-    with tf.Session() as sess:
-        metric_logger = MetricLogger(log_dir, sess) if log_dir is not None else None
-
-        init = tf.global_variables_initializer()
-        sess.run(init)
-
-        metrics = evaluate(model, sess, x_val, y_val, metric_logger=metric_logger)
-        print('Validation NDCG = {}'.format(metrics))
-
-        for epoch in range(n_epochs):
-            print('Training. Epoch = {}/{}'.format(epoch + 1, n_epochs))
-            train_one_epoch(model, sess, x_train, batch_size=batch_size,
-                            metric_logger=metric_logger)
-
-            metrics = evaluate(model, sess, x_val, y_val, batch_size=batch_size,
-                               metric_logger=metric_logger)
-            print('Validation NDCG = {}'.format(metrics))
-
-    return metrics
-
-
-@gin.configurable
-def sparse_tensor_from_init(init, weight_key='sparse_weight', randomize=False, eps=0.001):
+def sparse_tensor_from_init(init, name='sparse_weight', randomize=False, zero_diag=False):
 
     init = init.tocoo()
-    init_data = init.data
     if randomize:
-        init_data = eps * np.random.randn(*init.data.shape)
+        init.data = add_noise(init.data)
+    if zero_diag:
+        init.setdiag(0.0)
+        init.eliminate_zeros()
 
-    w_inds = tf.convert_to_tensor(list(zip(init.row, init.col)), dtype=np.int64)
-    w_data = tf.Variable(init_data.astype(np.float32), name=weight_key)
+    inds = list(zip(init.row, init.col))
+    data = init.data.astype(np.float32)
+    w_inds = tf.convert_to_tensor(inds, dtype=np.int64)
+    w_data = tf.Variable(data, name=name)
     w = tf.SparseTensor(w_inds, tf.identity(w_data),
                         dense_shape=init.shape)
     w = tf.sparse.reorder(w)  # as suggested here:
     # https://www.tensorflow.org/api_docs/python/tf/sparse/SparseTensor?version=stable
 
     #  summary for tensorboard
-    tf.summary.histogram(weight_key, w_data)
+    tf.summary.histogram(name, w_data)
 
     return w
+
+
+def add_noise(x, eps=0.01):
+
+    # return = eps * np.random.randn(*x.shape)
+    return np.random.exponential(eps) * x
+
+
+def neg_ll(logits, labels):
+
+    log_softmax_var = tf.nn.log_softmax(logits)
+    return -tf.reduce_sum(log_softmax_var * labels, axis=1)
+
+
+def mse(labels, logits):
+
+    return tf.square(labels - logits)
+
+
+def prepare_batch(x):
+    if issparse(x):
+        x = x.toarray()
+
+    return x.astype('float32')
