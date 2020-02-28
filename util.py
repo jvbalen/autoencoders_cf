@@ -35,10 +35,10 @@ class Logger(object):
                         continue
                     f.write(','.join(line.split(' = ')) + '\n')
 
-    def log_coefs(self, coefs, intercepts=None):
-        coefs_file = os.path.join(self.log_dir, 'coefs.npz')
-        if coefs is not None:
-            np.savez(coefs_file, coefs=coefs, intercepts=intercepts)
+    def save_weights(self, weights, biases=None):
+        path = os.path.join(self.log_dir, 'weights.npz')
+        if weights is not None:
+            save_weights(path, weights, biases)
         else:
             print('`coefs` is None: nothing to save')
 
