@@ -24,6 +24,7 @@ pandas
 scikit-learn
 tensorflow==1.15
 tensorboard  # if you wish
+gin-config
 ```
 
 ## References
