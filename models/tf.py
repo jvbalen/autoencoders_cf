@@ -98,7 +98,6 @@ class TFRecommender(BaseRecommender):
         return x, y
 
 
-
 @gin.configurable
 class WAE(object):
 
