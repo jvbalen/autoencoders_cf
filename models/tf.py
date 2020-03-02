@@ -4,7 +4,7 @@ from collections import defaultdict
 import gin
 import numpy as np
 import tensorflow as tf
-from scipy.sparse import issparse, eye
+from scipy.sparse import issparse
 from tensorflow.contrib.layers import apply_regularization, l2_regularizer
 
 from models.base import BaseRecommender

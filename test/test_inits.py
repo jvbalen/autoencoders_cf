@@ -8,7 +8,7 @@ import tensorflow as tf
 from scipy.sparse import random
 
 from data import DataLoader
-from util import prune, save_weights
+from util import prune, save_weights, sparse_info
 from preprocessing import preprocess
 from models.skl import SKLRecommender, LogisticRegressionFromFile
 from models.tf import TFRecommender, WAE, prepare_batch
@@ -22,6 +22,7 @@ def test_wae_inits(tmp_path):
     np.random.seed(1988)
 
     w = np.random.randn(200, 200)
+    np.fill_diagonal(w, 0.0)  # in-place
     b = np.random.randn(200)
     w_sp = prune(w, target_density=0.1)
     save_weights(path, weights=w_sp, biases=b)
@@ -52,7 +53,7 @@ def test_wae_experiment(tmp_path):
     np.random.seed(1988)
 
     # weights
-    w = np.eye(200)
+    w = np.eye(200, k=1)
     b = 0.5 * np.random.randn(200)
     w_sp = prune(w, target_density=0.1)
     save_weights(weights_path, weights=w_sp, biases=b)
