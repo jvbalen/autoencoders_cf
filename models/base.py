@@ -59,7 +59,7 @@ class BaseRecommender(object):
 
         metrics = {'val_ndcg': val_ndcg, 'val_r100': val_r100,
                    'val_bce': val_bce, 'val_loss': val_loss,
-                   'isfin': val_fin}
+                   'val_fin': val_fin}
         self.logger.log_metrics(metrics, config=gin.operative_config_str())
 
         return metrics

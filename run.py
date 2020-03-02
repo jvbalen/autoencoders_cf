@@ -2,9 +2,7 @@ from argparse import ArgumentParser
 
 import gin
 
-from models.slim import SLIMRecommender
-from models.skl import SKLRecommender
-from models.tf import TFRecommender
+from models import *
 from data import DataLoader
 from preprocessing import preprocess
 
