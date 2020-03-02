@@ -8,10 +8,10 @@ import tensorflow as tf
 from scipy.sparse import random
 
 from data import DataLoader
-from util import prune, save_weights
+from util import prune, save_weights, to_float32
 from preprocessing import preprocess
 from models.skl import SKLRecommender, LogisticRegressionFromFile
-from models.tf import TFRecommender, WAE, prepare_batch
+from models.tf import TFRecommender, WAE
 
 
 def test_wae_inits(tmp_path):
@@ -34,7 +34,7 @@ def test_wae_inits(tmp_path):
     with tf.Session() as sess:
         init = tf.global_variables_initializer()
         sess.run(init)
-        feed_dict = {model_tf.input_ph: prepare_batch(x)}
+        feed_dict = {model_tf.input_ph: to_float32(x, to_dense=True)}
         y_tf = sess.run(model_tf.logits, feed_dict=feed_dict)
 
     assert np.allclose(y_np, y_tf, rtol=1e-03)
