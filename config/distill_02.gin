@@ -2,10 +2,12 @@
 
 experiment.Recommender = @DistilledRecommender
 
-DistilledRecommender.sparse_weights_path = '/Users/jan/experiments/autoencoders/slim/weights_pruned_01.npz'
-DistilledRecommender.dense_weights_path = '/Users/jan/experiments/autoencoders/slim/weights.npz'
-DistilledRecommender.n_layers = 1
-DistilledRecommender.n_epochs = 10
+DistilledRecommender.teacher = @SKLRecommender()
+DistilledRecommender.weights_path = '/Users/jan/experiments/autoencoders/slim/weights_pruned_01.npz'
+
+SKLRecommender.Model = @LogisticRegressionFromFile
+SKLRecommender.ovr = False
+LogisticRegressionFromFile.path = '/Users/jan/experiments/autoencoders/slim/weights.npz'
 
 WAE.randomize_inits = False
 WAE.keep_prob = 0.5
