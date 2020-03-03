@@ -14,8 +14,8 @@ class BaseRecommender(object):
         self.batch_size = batch_size
 
     def train(self, x_train, y_train, x_val, y_val):
-        """Optionally train recommender"""
-        raise NotImplementedError()
+        """Optionally train, return validation metrics"""
+        return self.evaluate(x_val, y_val)
 
     def predict(self, x, y=None):
         """Predict scores.
