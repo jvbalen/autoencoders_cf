@@ -57,7 +57,7 @@ class LinearRecommender(BaseRecommender):
 @gin.configurable
 class LinearRecommenderFromFile(BaseRecommender):
 
-    def __init__(self, path=None):
+    def __init__(self, log_dir=None, path=None, batch_size=100):
         """Pretrained linear recommender.
 
         Given a file containing 2d weights and optional 1d biases,
@@ -71,10 +71,11 @@ class LinearRecommenderFromFile(BaseRecommender):
             biases = biases.reshape(1, -1)
         self.weights = weights
         self.biases = biases
+        super().__init__(log_dir=log_dir, batch_size=batch_size)
 
     def predict(self, x, y=None):
         """Predict scores"""
-        y_pred = x @ self.weights + self.biases
+        y_pred = np.asarray(x @ self.weights + self.biases)
 
         return y_pred, np.nan
 
