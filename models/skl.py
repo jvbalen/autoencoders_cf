@@ -21,7 +21,7 @@ gin.external_configurable(Ridge)
 @gin.configurable
 class SKLRecommender(BaseRecommender):
 
-    def __init__(self, log_dir, Model=LogisticRegression, ovr=True, batch_size=100):
+    def __init__(self, log_dir=None, Model=LogisticRegression, ovr=True, batch_size=100):
         """Recommender based on a sklearn classification or regression model.
 
         If ovr=True, wrap the Model in a OneVsRestClassifier. This is required for most
@@ -43,7 +43,9 @@ class SKLRecommender(BaseRecommender):
         return metrics
 
     def predict(self, x, y=None):
-        """Predict scores"""
+        """Predict scores
+        TODO: fails on OVR classifiers - they don't expose predict_logits of members?
+        """
         if issparse(x):
             x = x.toarray()
         x = x.astype('float32')

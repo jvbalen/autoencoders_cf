@@ -90,7 +90,7 @@ class TFRecommender(BaseRecommender):
         return y_pred, loss
 
     def prepare_batch(self, x, y=None):
-
+        """Convert a batch of x and y to a sess.run-compatible format"""
         x = to_float32(x, to_dense=True)
         if y is not None:
             y = to_float32(y, to_dense=True)
