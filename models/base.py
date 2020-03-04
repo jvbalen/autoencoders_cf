@@ -26,21 +26,13 @@ class BaseRecommender(object):
     def evaluate(self, x_val, y_val):
         """Evaluate model on observed and unobserved validation data x_val, y_val
         """
-        n_val = x_val.shape[0]
-        val_inds = list(range(n_val))
-
         fin_list = []
         loss_list = []
         ndcg_list = []
         r100_list = []
         bce_list = []
-        for i_batch, start in enumerate(range(0, n_val, self.batch_size)):
-            print('validation batch {}/{}...'.format(i_batch + 1, int(n_val / self.batch_size)))
-
-            end = min(start + self.batch_size, n_val)
-            x = x_val[val_inds[start:end]]
-            y = y_val[val_inds[start:end]]
-
+        for x, y in self.gen_batches(x_val, y_val):
+            print(f'Evaluating...')
             y_pred, loss = self.predict(x, y)
             fin_list.append(count_finite(y_pred))
 
@@ -63,3 +55,17 @@ class BaseRecommender(object):
         self.logger.log_metrics(metrics, config=gin.operative_config_str())
 
         return metrics
+
+    def gen_batches(self, x, y, shuffle=False, print_interval=1):
+        """Generate batches from data arrays x and y
+        """
+        n_examples = x.shape[0]
+        inds = list(range(n_examples))
+        if shuffle:
+            np.random.shuffle(inds)
+        for i_batch, start in enumerate(range(0, n_examples, self.batch_size)):
+            end = min(start + self.batch_size, n_examples)
+            if i_batch % print_interval == 0:
+                print('batch {}/{}...'.format(i_batch + 1, int(n_examples / self.batch_size)))
+
+            yield x[inds[start:end]], y[inds[start:end]]

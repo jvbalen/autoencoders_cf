@@ -13,7 +13,7 @@ class DistilledRecommender(TFRecommender):
         """
         self.teacher = teacher
         super().__init__(log_dir=log_dir, weights_path=weights_path,
-                         n_layers=n_layers, batch_size=batch_size, n_epochs=10)
+                         n_layers=n_layers, batch_size=batch_size, n_epochs=n_epochs)
 
     def prepare_batch(self, x, y=None):
         """Convert a batch of x and y to a sess.run-compatible format,

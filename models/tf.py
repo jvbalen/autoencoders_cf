@@ -55,18 +55,7 @@ class TFRecommender(BaseRecommender):
 
     def train_one_epoch(self, x_train, y_train, x_val=None, y_val=None,
                         print_interval=1):
-
-        n_train = x_train.shape[0]
-        train_inds = list(range(n_train))
-
-        np.random.shuffle(train_inds)
-        for i_batch, start in enumerate(range(0, n_train, self.batch_size)):
-            end = min(start + self.batch_size, n_train)
-            if i_batch % print_interval == 0:
-                print('batch {}/{}...'.format(i_batch + 1, int(n_train / self.batch_size)))
-
-            x = x_train[train_inds[start:end]]
-            y = y_train[train_inds[start:end]]
+        for x, y in self.gen_batches(x_train, y_train):
             x, y = self.prepare_batch(x, y)
             feed_dict = {self.model.input_ph: x, self.model.label_ph: y}
             summary_train, _ = self.sess.run([self.model.summaries, self.model.train_op],
@@ -160,7 +149,7 @@ class WAE(object):
                 if b_init is None:
                     b_init = np.zeros([w_init.shape[0]])
                 elif self.randomize_inits:
-                    b_init = add_noise(b_init)
+                    b_init = mul_noise(b_init)
                 biases.append(tf.Variable(b_init.astype(np.float32), name=bias_key))
                 tf.summary.histogram(bias_key, biases[-1])
 
@@ -238,7 +227,7 @@ def sparse_tensor_from_init(init, name='sparse_weight', randomize=False, zero_di
 
     init = init.tocoo()
     if randomize:
-        init.data = add_noise(init.data)
+        init.data = mul_noise(init.data)
     if zero_diag:
         init.setdiag(0.0)
         init.eliminate_zeros()
@@ -258,7 +247,7 @@ def sparse_tensor_from_init(init, name='sparse_weight', randomize=False, zero_di
     return w
 
 
-def add_noise(x, eps=0.01):
+def mul_noise(x, eps=0.01):
 
     # return = eps * np.random.randn(*x.shape)
     return np.random.exponential(eps) * x
