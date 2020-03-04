@@ -4,11 +4,10 @@ from collections import defaultdict
 import gin
 import numpy as np
 import tensorflow as tf
-from scipy.sparse import issparse, eye
 from tensorflow.contrib.layers import apply_regularization, l2_regularizer
 
 from models.base import BaseRecommender
-from util import Logger, load_weights
+from util import Logger, load_weights, to_float32
 
 gin.external_configurable(tf.train.GradientDescentOptimizer)
 gin.external_configurable(tf.train.AdamOptimizer)
@@ -68,8 +67,8 @@ class TFRecommender(BaseRecommender):
 
             x = x_train[train_inds[start:end]]
             y = y_train[train_inds[start:end]]
-            feed_dict = {self.model.input_ph: prepare_batch(x),
-                         self.model.label_ph: prepare_batch(y)}
+            x, y = self.prepare_batch(x, y)
+            feed_dict = {self.model.input_ph: x, self.model.label_ph: y}
             summary_train, _ = self.sess.run([self.model.summaries, self.model.train_op],
                                              feed_dict=feed_dict)
             self.logger.log_summaries({'summary': summary_train})
@@ -78,17 +77,25 @@ class TFRecommender(BaseRecommender):
         """Predict scores.
         If y is not None, also return a loss.
         """
+        x, y = self.prepare_batch(x, y)
         if y is not None:
-            feed_dict = {self.model.input_ph: prepare_batch(x),
-                         self.model.label_ph: prepare_batch(y)}
+            feed_dict = {self.model.input_ph: x, self.model.label_ph: y}
             y_pred, loss = self.sess.run([self.model.logits, self.model.loss],
                                          feed_dict=feed_dict)
         else:
-            feed_dict = {self.model.input_ph: prepare_batch(x)}
+            feed_dict = {self.model.input_ph: x}
             y_pred = self.sess.run(self.model.logits, feed_dict=feed_dict)
             loss = None
 
         return y_pred, loss
+
+    def prepare_batch(self, x, y=None):
+        """Convert a batch of x and y to a sess.run-compatible format"""
+        x = to_float32(x, to_dense=True)
+        if y is not None:
+            y = to_float32(y, to_dense=True)
+
+        return x, y
 
 
 @gin.configurable
@@ -106,6 +113,7 @@ class WAE(object):
         self.use_biases = use_biases
         self.normalize_inputs = normalize_inputs
         self.shared_weights = shared_weights
+        self.loss = loss
         self.lam = lam
         self.lr = lr
         self.random_seed = random_seed
@@ -114,7 +122,7 @@ class WAE(object):
         loss_functions = {"mse": mse,
                           "nll": neg_ll,
                           "bce": tf.nn.sigmoid_cross_entropy_with_logits}
-        loss_fn = loss_functions[loss]
+        loss_fn = loss_functions[self.loss]
 
         # placeholders and weights
         self.input_ph = tf.placeholder(dtype=tf.float32, shape=[None, w_inits[0].shape[1]])
@@ -265,10 +273,3 @@ def neg_ll(logits, labels):
 def mse(labels, logits):
 
     return tf.square(labels - logits)
-
-
-def prepare_batch(x):
-    if issparse(x):
-        x = x.toarray()
-
-    return x.astype('float32')

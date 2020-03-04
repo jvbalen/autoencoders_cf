@@ -10,10 +10,10 @@ from util import prune_global, load_weights
 
 
 @gin.configurable
-class SLIMRecommender(BaseRecommender):
+class LinearRecommender(BaseRecommender):
 
     def __init__(self, log_dir, reg=500, density=1.0, batch_size=100):
-        """Recommender based on Harald Steck's closed form variant [1]
+        """Linear recommender based on Harald Steck's closed form variant [1]
         of Sparse Linear Methods (SLIM) [2].
 
         [1] Harald Steck, Embarrassingly shallow auto-encoders. WWW 2019
@@ -50,6 +50,32 @@ class SLIMRecommender(BaseRecommender):
     def predict(self, x, y=None):
         """Predict scores"""
         y_pred = x @ self.weights
+
+        return y_pred, np.nan
+
+
+@gin.configurable
+class LinearRecommenderFromFile(BaseRecommender):
+
+    def __init__(self, log_dir=None, path=None, batch_size=100):
+        """Pretrained linear recommender.
+
+        Given a file containing 2d weights and optional 1d biases,
+        predict item scores.
+        """
+        weights, biases = load_weights(path)
+        if biases is None:
+            print('LinearRecommenderFromFile: no intercepts loaded...')
+            biases = np.zeros((1, weights.shape[1]))
+        else:
+            biases = biases.reshape(1, -1)
+        self.weights = weights
+        self.biases = biases
+        super().__init__(log_dir=log_dir, batch_size=batch_size)
+
+    def predict(self, x, y=None):
+        """Predict scores"""
+        y_pred = np.asarray(x @ self.weights + self.biases)
 
         return y_pred, np.nan
 

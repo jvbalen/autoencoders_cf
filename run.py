@@ -2,15 +2,13 @@ from argparse import ArgumentParser
 
 import gin
 
-from models.slim import SLIMRecommender
-from models.skl import SKLRecommender
-from models.tf import TFRecommender
+from models import *
 from data import DataLoader
 from preprocessing import preprocess
 
 
 @gin.configurable
-def experiment(data_path, Recommender=SLIMRecommender, log_dir=None, cap=None):
+def experiment(data_path, Recommender=LinearRecommender, log_dir=None, cap=None):
 
     print('Loading data...')
     loader = DataLoader(data_path)

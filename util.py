@@ -140,7 +140,10 @@ def save_weights(path, weights, biases=None):
             data = np.load(path)
             np.savez(path, biases=biases, **data)
     else:
-        np.savez(path, weights=weights, biases=biases)
+        if biases is None:
+            np.savez(path, weights=weights)
+        else:
+            np.savez(path, weights=weights, biases=biases)
 
 
 def load_weights(path):
@@ -149,13 +152,14 @@ def load_weights(path):
         # look for sparse matrix
         weights = load_npz(path)
         # check if the same file also contains the intercepts (see `save_weights`)
+        data = np.load(path, allow_pickle=True)
         try:
-            biases = np.load(path).get('biases', None)
+            biases = data.get('biases')
         except KeyError:
-            biases = np.load(path).get('intercepts', None)
+            biases = data.get('intercepts', None)
     except ValueError:
         # look for dense arrays
-        data = np.load(path)
+        data = np.load(path, allow_pickle=True)
         try:
             weights = data['weights']
             biases = data.get('biases', None)
@@ -171,3 +175,11 @@ def sparse_info(m):
     print("{} of {}".format(type(m), m.dtype))
     print("shape = {}, nnz = {}".format(m.shape, m.nnz))
     print("density = {:.3}".format(m.nnz / np.prod(m.shape)))
+
+
+def to_float32(x, to_dense=False):
+    """Convert numpy/sp.sparse data to float32"""
+    if to_dense and issparse(x):
+        x = x.toarray()
+
+    return x.astype('float32')

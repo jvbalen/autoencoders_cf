@@ -1,14 +1,12 @@
 import gin
 import numpy as np
 from scipy.sparse import issparse
-from scipy.special import expit
 from sklearn.multiclass import OneVsRestClassifier
 from sklearn.linear_model import LogisticRegression, Ridge
 from sklearn.naive_bayes import BernoulliNB, ComplementNB
 from sklearn.svm import LinearSVC
 
 from models.base import BaseRecommender
-from util import load_weights
 
 # register some external classes to be able to refer to them via gin
 gin.external_configurable(BernoulliNB)
@@ -21,7 +19,7 @@ gin.external_configurable(Ridge)
 @gin.configurable
 class SKLRecommender(BaseRecommender):
 
-    def __init__(self, log_dir, Model=LogisticRegression, ovr=True, batch_size=100):
+    def __init__(self, log_dir=None, Model=LogisticRegression, ovr=True, batch_size=100):
         """Recommender based on a sklearn classification or regression model.
 
         If ovr=True, wrap the Model in a OneVsRestClassifier. This is required for most
@@ -43,7 +41,9 @@ class SKLRecommender(BaseRecommender):
         return metrics
 
     def predict(self, x, y=None):
-        """Predict scores"""
+        """Predict scores
+        TODO: fails on OVR classifiers - they don't expose predict_proba of members?
+        """
         if issparse(x):
             x = x.toarray()
         x = x.astype('float32')
@@ -56,34 +56,6 @@ class SKLRecommender(BaseRecommender):
                 y_pred = self.model.decision_function(x)
 
         return y_pred, np.nan
-
-
-@gin.configurable
-class LogisticRegressionFromFile(object):
-
-    def __init__(self, path=None):
-        """Sparse pretrained logistic regression (LR).
-
-        Given a dense 2d array of LR coeficients and optional 1d intercepts,
-        predict class probabilities.
-        """
-        coefs, intercepts = load_weights(path)
-        if intercepts is None:
-            print('LogisticRegressionFromFile: no intercepts loaded...')
-            intercepts = np.zeros((1, coefs.shape[1]))
-        else:
-            intercepts = intercepts.reshape(1, -1)
-        self.intercepts = intercepts
-        self.coefs = coefs
-
-    def fit(self, *args):
-        pass
-
-    def predict_logits(self, x):
-        return np.asarray(x @ self.coefs + self.intercepts)
-
-    def predict_proba(self, x):
-        return expit(self.predict_logits(x))
 
 
 def coefs_from_model(model):

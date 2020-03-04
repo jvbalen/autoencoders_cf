@@ -14,8 +14,8 @@ class BaseRecommender(object):
         self.batch_size = batch_size
 
     def train(self, x_train, y_train, x_val, y_val):
-        """Optionally train recommender"""
-        raise NotImplementedError()
+        """Optionally train, return validation metrics"""
+        return self.evaluate(x_val, y_val)
 
     def predict(self, x, y=None):
         """Predict scores.
@@ -59,7 +59,7 @@ class BaseRecommender(object):
 
         metrics = {'val_ndcg': val_ndcg, 'val_r100': val_r100,
                    'val_bce': val_bce, 'val_loss': val_loss,
-                   'isfin': val_fin}
+                   'val_fin': val_fin}
         self.logger.log_metrics(metrics, config=gin.operative_config_str())
 
         return metrics
