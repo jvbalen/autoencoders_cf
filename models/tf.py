@@ -49,6 +49,7 @@ class TFRecommender(BaseRecommender):
             for epoch in range(self.n_epochs):
                 print(f'Training. Epoch = {epoch + 1}/{self.n_epochs}')
                 self.train_one_epoch(x_train, y_train)
+                print('Evaluating...')
                 metrics = self.evaluate(x_val, y_val)
 
         return metrics

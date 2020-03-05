@@ -3,10 +3,10 @@ from warnings import warn
 
 import gin
 import numpy as np
-from scipy.sparse import issparse
+from scipy.sparse import issparse, csr_matrix, lil_matrix, coo_matrix
 
 from models.base import BaseRecommender
-from util import prune_global, load_weights
+from util import prune_global, load_weights, sparse_info
 
 
 @gin.configurable
@@ -33,9 +33,7 @@ class LinearRecommender(BaseRecommender):
         if y_train is not None:
             warn("SLIM is unsupervised, y_train will be ignored")
 
-        print('Computing Gramm matrix...')
         gramm = gramm_matrix(x_train).toarray()
-        print('Computing weights...')
         self.weights = closed_form_slim(gramm, l2_reg=self.reg)
         if self.density < 1.0:
             self.weights = prune_global(self.weights, self.density)
@@ -52,6 +50,37 @@ class LinearRecommender(BaseRecommender):
         y_pred = x @ self.weights
 
         return y_pred, np.nan
+
+
+@gin.configurable
+class BlockLinearRecommender(LinearRecommender):
+
+    def train(self, x_train, y_train, x_val, y_val):
+        """Train and evaluate"""
+        if y_train is not None:
+            warn("SLIM is unsupervised, y_train will be ignored")
+
+        n_users, n_items = x_train.shape
+        self.weights = coo_matrix((n_items, n_items))
+        for x, y in self.gen_batches(x_train, y_train):
+            gramm = gramm_matrix(x)
+            # batch_weights = closed_form_slim(gramm, l2_reg=self.reg)
+            batch_weights = block_closed_form_slim(gramm, l2_reg=self.reg)
+            if self.density < 1.0:
+                batch_weights = prune_global(batch_weights, self.density)
+            self.weights += batch_weights.tocoo()
+
+        n_batches = np.ceil(n_users / self.batch_size)
+        self.weights = self.weights.tocsr() / n_batches
+
+        if self.logger is not None:
+            self.logger.log_config(gin.operative_config_str())
+            self.logger.save_weights(self.weights)
+
+        print('Evaluating...')
+        metrics = self.evaluate(x_val, y_val)
+
+        return metrics
 
 
 @gin.configurable
@@ -84,11 +113,28 @@ def closed_form_slim(gramm, l2_reg=500):
 
     if issparse(gramm):
         gramm = gramm.toarray()
+    print(f'  computing slim weights of shape {gramm.shape}')
     diag_indices = np.diag_indices(gramm.shape[0])
     gramm[diag_indices] += l2_reg
     inv_gramm = np.linalg.inv(gramm)
     weights = inv_gramm / (-np.diag(inv_gramm))
     weights[diag_indices] = 0.0
+
+    return weights
+
+
+def block_closed_form_slim(gramm, l2_reg=500):
+
+    gramm.eliminate_zeros()
+    nonzero_rows = np.unique(gramm.tocoo().row)
+
+    sub_gramm = gramm[nonzero_rows][:, nonzero_rows]
+    sub_weights = csr_matrix(closed_form_slim(sub_gramm, l2_reg=l2_reg))
+
+    rows = lil_matrix((sub_weights.shape[0], gramm.shape[1]))
+    rows[:, nonzero_rows] = lil_matrix(sub_weights)
+    weights = lil_matrix(gramm.shape)
+    weights[nonzero_rows] = rows
 
     return weights
 
