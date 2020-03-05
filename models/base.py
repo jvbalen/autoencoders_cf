@@ -1,3 +1,5 @@
+from collections import defaultdict
+
 import gin
 import numpy as np
 
@@ -26,32 +28,19 @@ class BaseRecommender(object):
     def evaluate(self, x_val, y_val):
         """Evaluate model on observed and unobserved validation data x_val, y_val
         """
-        fin_list = []
-        loss_list = []
-        ndcg_list = []
-        r100_list = []
-        bce_list = []
+        batch_metrics = defaultdict(list)
         for x, y in self.gen_batches(x_val, y_val):
-            print(f'Evaluating...')
             y_pred, loss = self.predict(x, y)
-            fin_list.append(count_finite(y_pred))
+            batch_metrics['loss'].append([loss])
+            batch_metrics['fin'].append([count_finite(y_pred)])
 
             # exclude examples from training and validation (if any) and compute rank metrics
             y_pred[x.nonzero()] = np.min(y_pred)
-            ndcg_list.append(ndcg_binary_at_k_batch(y_pred, y, k=100))
-            r100_list.append(recall_at_k_batch(y_pred, y, k=100))
-            bce_list.append(binary_crossentropy_from_logits(y_pred, y))
-            loss_list.append(loss)
+            batch_metrics['ndcg'].append(ndcg_binary_at_k_batch(y_pred, y, k=100))
+            batch_metrics['r100'].append(recall_at_k_batch(y_pred, y, k=100))
+            batch_metrics['bce'].append(binary_crossentropy_from_logits(y_pred, y))
 
-        val_fin = np.concatenate(fin_list).mean()  # mean over n_val
-        val_ndcg = np.concatenate(ndcg_list).mean()
-        val_r100 = np.concatenate(r100_list).mean()
-        val_bce = np.concatenate(bce_list).mean()
-        val_loss = np.mean(loss_list)  # mean over batches
-
-        metrics = {'val_ndcg': val_ndcg, 'val_r100': val_r100,
-                   'val_bce': val_bce, 'val_loss': val_loss,
-                   'val_fin': val_fin}
+        metrics = {k: np.concatenate(v).mean() for k, v in batch_metrics.items()}
         self.logger.log_metrics(metrics, config=gin.operative_config_str())
 
         return metrics
@@ -67,5 +56,7 @@ class BaseRecommender(object):
             end = min(start + self.batch_size, n_examples)
             if i_batch % print_interval == 0:
                 print('batch {}/{}...'.format(i_batch + 1, int(n_examples / self.batch_size)))
-
-            yield x[inds[start:end]], y[inds[start:end]]
+            if y is None:
+                yield x[inds[start:end]], None
+            else:
+                yield x[inds[start:end]], y[inds[start:end]]
