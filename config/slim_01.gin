@@ -1,0 +1,4 @@
+# SLIM - 99 pct sparse
+
+experiment.Recommender = @LinearRecommender
+LinearRecommender.density = 0.01

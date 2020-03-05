@@ -1,4 +1,0 @@
-# Sparse Pretrained Logistic Regression recommender with TFIDF
-
-experiment.Recommender = @LinearRecommender
-LinearRecommender.density = 0.007

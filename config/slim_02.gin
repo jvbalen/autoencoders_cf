@@ -1,0 +1,7 @@
+# block-SLIM - 99 pct sparse
+
+experiment.Recommender = @BlockLinearRecommender
+experiment.cap = 10000
+
+BlockLinearRecommender.density = 0.01
+BlockLinearRecommender.batch_size = 10000
