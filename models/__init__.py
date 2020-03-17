@@ -1,11 +1,11 @@
-from models.slim import LinearRecommender, LinearRecommenderFromFile, BlockLinearRecommender
+from models.slim import LinearRecommender, LinearRecommenderFromFile, WoodburyRecommender
 from models.skl import SKLRecommender
 from models.tf import TFRecommender
 from models.distill import DistilledRecommender
 
 __all__ = ['LinearRecommender',
            'LinearRecommenderFromFile',
-           'BlockLinearRecommender',
+           'WoodburyRecommender',
            'SKLRecommender',
            'TFRecommender',
            'DistilledRecommender']

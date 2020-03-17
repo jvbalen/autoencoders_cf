@@ -1,7 +1,9 @@
 # block-SLIM - 99 pct sparse
 
-experiment.Recommender = @BlockLinearRecommender
+experiment.Recommender = @WoodburyRecommender
 experiment.cap = 10000
 
-BlockLinearRecommender.density = 0.01
-BlockLinearRecommender.batch_size = 10000
+WoodburyRecommender.density = 0.01
+WoodburyRecommender.batch_size = 1000
+WoodburyRecommender.approx = True
+WoodburyRecommender.save_weights = False
