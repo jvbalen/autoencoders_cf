@@ -64,9 +64,12 @@ class LinearRecommender(BaseRecommender):
 @gin.configurable
 class WoodburyRecommender(LinearRecommender):
 
-    def __init__(self, log_dir, reg=500, density=1.0, batch_size=100, approx=False, save_weights=True):
+    def __init__(self, log_dir, reg=500, density=1.0, batch_size=100,
+                 approx=False, n_models=1,
+                 save_weights=True):
 
         self.approx = approx
+        self.n_models = n_models
         super().__init__(log_dir, reg=reg, density=density, batch_size=batch_size, save_weights=save_weights)
 
     def train(self, x_train, y_train, x_val, y_val):
@@ -75,12 +78,19 @@ class WoodburyRecommender(LinearRecommender):
             warn("SLIM is unsupervised, y_train will be ignored")
 
         t0 = time.perf_counter()
-        if self.approx:
+        if self.approx and self.n_models > 1:
+            self.weights = woodbury_ensemble(x_train, n_models=self.n_models,
+                                             batch_size=self.batch_size,
+                                             target_density=self.density)
+        elif self.n_models > 1:
+            raise NotImplementedError('approx=True and n_models>1 not supported')
+        elif self.approx:
             self.weights = woodbury_slim_approx(x_train, batch_size=self.batch_size,
                                                 target_density=self.density)
         else:
             self.weights = woodbury_slim(x_train, batch_size=self.batch_size,
                                          target_density=self.density)
+
         dt = time.perf_counter() - t0
         if self.logger is not None:
             self.logger.log_config(gin.operative_config_str())
@@ -249,7 +259,7 @@ def woodbury_slim(x, l2_reg=500, batch_size=100, drop_inactive_items=False, targ
     return weights
 
 
-def woodbury_slim_approx(x, l2_reg=500, batch_size=100, target_density=1.0):
+def woodbury_slim_approx(x, l2_reg=500, batch_size=100, target_density=1.0, strict_sparsity=True):
     """Closed-form SLIM with incremental computation of the inverse gramm matrix,
     and a useful approximation.
 
@@ -261,18 +271,16 @@ def woodbury_slim_approx(x, l2_reg=500, batch_size=100, target_density=1.0):
     we use the Woodbury matrix identity:
         inv(A + U C V) = inv(A) - inv(A) U inv(inv(c) + V inv(A) U) V inv(A)
     or if P is the inverse of gramm matrix G and if X is a batch of NEW users:
-        inv(G + X.T X) = P X.T inv(I + X P X.T) X P
-    and avoid some multiplication overhead by
-    - precomputing X P and P X.T = (X P).T
-    - drop rows and cols for items not involved in `x_batch`...
-        - in various places where this does not affect the solution
-        - in the final update, too, making this method an approximation
+        inv(G + X.T X) = P - P X.T inv(I + X P X.T) X P
+    we also
+    - precompute X P which also gets us P X.T = (X P).T
+    - avoid some multiplication overhead by dropping rows and cols for items not involved in `x_batch`
+        for most operations this does not affect the solution, however
+        in our last step, it does, making this method an approximation
+    - optionally prune each update to conserve memory
     """
-    n_users, n_items = x.shape
-    if target_density < 1.0:
-        P = eye(n_items).tocsr() / l2_reg
-    else:
-        P = np.eye(n_items) / l2_reg
+    n_items = x.shape[1]
+    P = eye(n_items).tocsr() / l2_reg
     for x_batch in gen_batches(x, batch_size=batch_size):
         print('  subsetting...')
         inds = np.unique(x_batch.tocoo().col)
@@ -301,7 +309,24 @@ def woodbury_slim_approx(x, l2_reg=500, batch_size=100, target_density=1.0):
     inv_diag[P.diagonal() == 0] = 1.0
     weights = - P.multiply(inv_diag).tocsr()
     weights[diag_indices] = 0.0
-    weights = prune_global(weights, target_density=target_density)
+    if target_density < 1.0 and strict_sparsity:
+        weights = prune_global(weights, target_density=target_density)
+
+    return weights
+
+
+def woodbury_ensemble(x, n_models=30, l2_reg=500, batch_size=100, target_density=1.0, strict_sparsity=True):
+
+    weights = 0
+    samples_per_model = int(np.ceil(x.shape[0] / n_models))
+    for x_split in gen_batches(x, batch_size=samples_per_model):
+        print(f'{x_split.shape[0]} users in split')
+        w = woodbury_slim_approx(x_split, l2_reg=l2_reg, batch_size=batch_size, target_density=target_density)
+        weights = weights + w
+
+    weights = weights / n_models
+    if target_density < 1.0 and strict_sparsity:
+        weights = prune_global(weights, target_density=target_density)
 
     return weights
 
