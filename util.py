@@ -57,12 +57,11 @@ def prune_global(x, target_density=0.005):
         x_sp.eliminate_zeros()
         if x_sp.nnz <= target_nnz:
             return x_sp
-
-        thr = np.partition(np.abs(x_sp.data), kth=-target_nnz)[-target_nnz]
+        thr = get_pruning_threshold(x, target_density=target_density)
         x_sp.data[np.abs(x_sp.data) < thr] = 0.0
     else:
         x = x.copy()
-        thr = np.quantile(np.abs(x), 1.0-target_density)
+        thr = get_pruning_threshold(x, target_density=target_density)
         x[np.abs(x) < thr] = 0.0
         x_sp = csr_matrix(x)
     x_sp.eliminate_zeros()
@@ -111,6 +110,25 @@ def prune(x, target_density=0.005, row_nnz=None):
     x_rows = prune_rows(x, target_nnz=row_nnz)
 
     return sparse_union(x_glob, x_rows)
+
+
+def get_pruning_threshold(x, target_density=0.005):
+    """Get the pruning threshold for a sparse or dense array given
+    a desired density.
+    """
+    if issparse(x):
+        try:
+            abs_values = np.abs(x.data)
+        except AttributeError:
+            abs_values = np.abs(x.tocoo().data)
+        target_nnz = int(target_density * np.prod(x.shape))
+        if target_nnz > len(abs_values):
+            return 0.0
+        thr = np.partition(abs_values, kth=-target_nnz)[-target_nnz]
+    else:
+        thr = np.quantile(np.abs(x), 1.0-target_density)
+
+    return thr
 
 
 def sparse_union(x, y):

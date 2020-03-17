@@ -31,31 +31,32 @@ class BaseRecommender(object):
         batch_metrics = defaultdict(list)
         for x, y in self.gen_batches(x_val, y_val):
             y_pred, loss = self.predict(x, y)
-            batch_metrics['loss'].append([loss])
-            batch_metrics['fin'].append([count_finite(y_pred)])
+            batch_metrics['fin'].extend(count_finite(y_pred))
+            batch_metrics['loss'].append(loss)
 
             # exclude examples from training and validation (if any) and compute rank metrics
             y_pred[x.nonzero()] = np.min(y_pred)
-            batch_metrics['ndcg'].append(ndcg_binary_at_k_batch(y_pred, y, k=100))
-            batch_metrics['r100'].append(recall_at_k_batch(y_pred, y, k=100))
-            batch_metrics['bce'].append(binary_crossentropy_from_logits(y_pred, y))
+            batch_metrics['ndcg'].extend(ndcg_binary_at_k_batch(y_pred, y, k=100))
+            batch_metrics['r100'].extend(recall_at_k_batch(y_pred, y, k=100))
+            batch_metrics['bce'].extend(binary_crossentropy_from_logits(y_pred, y))
 
-        metrics = {k: np.concatenate(v).mean() for k, v in batch_metrics.items()}
+        metrics = {k: np.mean(v) for k, v in batch_metrics.items()}
         self.logger.log_metrics(metrics, config=gin.operative_config_str())
 
         return metrics
 
-    def gen_batches(self, x, y, shuffle=False, print_interval=1):
+    def gen_batches(self, x, y=None, shuffle=False, print_interval=1):
         """Generate batches from data arrays x and y
         """
         n_examples = x.shape[0]
+        n_batches = int(np.ceil(n_examples / self.batch_size))
         inds = list(range(n_examples))
         if shuffle:
             np.random.shuffle(inds)
         for i_batch, start in enumerate(range(0, n_examples, self.batch_size)):
             end = min(start + self.batch_size, n_examples)
             if i_batch % print_interval == 0:
-                print('batch {}/{}...'.format(i_batch + 1, int(n_examples / self.batch_size)))
+                print('batch {}/{}...'.format(i_batch + 1, n_batches))
             if y is None:
                 yield x[inds[start:end]], None
             else:
