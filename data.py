@@ -1,4 +1,7 @@
+
 import os
+import sys
+
 import pandas as pd
 from scipy import sparse
 import numpy as np
@@ -74,19 +77,19 @@ def get_count(tp, id):
 
 def filter_triplets(tp, min_uc=5, min_sc=0):
     if min_sc > 0:
-        itemcount = get_count(tp, 'movieId')
-        tp = tp[tp['movieId'].isin(itemcount.index[itemcount >= min_sc])]
+        itemcount = get_count(tp, item_col)
+        tp = tp[tp[item_col].isin(itemcount.index[itemcount >= min_sc])]
 
     if min_uc > 0:
-        usercount = get_count(tp, 'userId')
-        tp = tp[tp['userId'].isin(usercount.index[usercount >= min_uc])]
+        usercount = get_count(tp, user_col)
+        tp = tp[tp[user_col].isin(usercount.index[usercount >= min_uc])]
 
-    usercount, itemcount = get_count(tp, 'userId'), get_count(tp, 'movieId')
+    usercount, itemcount = get_count(tp, user_col), get_count(tp, item_col)
     return tp, usercount, itemcount
 
 
 def split_train_test_proportion(data, test_prop=0.2):
-    data_grouped_by_user = data.groupby('userId')
+    data_grouped_by_user = data.groupby(user_col)
     tr_list, te_list = list(), list()
 
     np.random.seed(98765)
@@ -112,18 +115,24 @@ def split_train_test_proportion(data, test_prop=0.2):
 
 
 def numerize(tp, profile2id, show2id):
-    uid = tp['userId'].apply(lambda x: profile2id[x])
-    sid = tp['movieId'].apply(lambda x: show2id[x])
+    uid = tp[user_col].apply(lambda x: profile2id[x])
+    sid = tp[item_col].apply(lambda x: show2id[x])
     return pd.DataFrame(data={'uid': uid, 'sid': sid}, columns=['uid', 'sid'])
 
 
 if __name__ == '__main__':
 
-    print("Load and Preprocess Movielens-20m dataset")
+    path = sys.argv[1] if len(sys.argv) > 1 else 'ml-20m/ratings.csv'
+    data_dir = os.path.dirname(path)
+
     # Load Data
-    DATA_DIR = 'ml-20m/'
-    raw_data = pd.read_csv(os.path.join(DATA_DIR, 'ratings.csv'), header=0)
-    raw_data = raw_data[raw_data['rating'] > 3.5]
+    print("Load and preprocess dataset")
+    raw_data = pd.read_csv(path, header=0)
+    if len(raw_data.columns) > 2:
+        user_col, item_col, rating_col = raw_data.columns
+        raw_data = raw_data[raw_data[rating_col] > 3.5]
+    else:
+        user_col, item_col = raw_data.columns
 
     # Filter Data
     raw_data, user_activity, item_popularity = filter_triplets(raw_data)
@@ -142,13 +151,13 @@ if __name__ == '__main__':
     vd_users = unique_uid[(n_users - n_heldout_users * 2): (n_users - n_heldout_users)]
     te_users = unique_uid[(n_users - n_heldout_users):]
 
-    train_plays = raw_data.loc[raw_data['userId'].isin(tr_users)]
-    unique_sid = pd.unique(train_plays['movieId'])
+    train_plays = raw_data.loc[raw_data[user_col].isin(tr_users)]
+    unique_sid = pd.unique(train_plays[item_col])
 
     show2id = dict((sid, i) for (i, sid) in enumerate(unique_sid))
     profile2id = dict((pid, i) for (i, pid) in enumerate(unique_uid))
 
-    pro_dir = os.path.join(DATA_DIR, 'pro_sg')
+    pro_dir = os.path.join(data_dir, 'pro_sg')
 
     if not os.path.exists(pro_dir):
         os.makedirs(pro_dir)
@@ -157,13 +166,13 @@ if __name__ == '__main__':
         for sid in unique_sid:
             f.write('%s\n' % sid)
 
-    vad_plays = raw_data.loc[raw_data['userId'].isin(vd_users)]
-    vad_plays = vad_plays.loc[vad_plays['movieId'].isin(unique_sid)]
+    vad_plays = raw_data.loc[raw_data[user_col].isin(vd_users)]
+    vad_plays = vad_plays.loc[vad_plays[item_col].isin(unique_sid)]
 
     vad_plays_tr, vad_plays_te = split_train_test_proportion(vad_plays)
 
-    test_plays = raw_data.loc[raw_data['userId'].isin(te_users)]
-    test_plays = test_plays.loc[test_plays['movieId'].isin(unique_sid)]
+    test_plays = raw_data.loc[raw_data[user_col].isin(te_users)]
+    test_plays = test_plays.loc[test_plays[item_col].isin(unique_sid)]
 
     test_plays_tr, test_plays_te = split_train_test_proportion(test_plays)
 
