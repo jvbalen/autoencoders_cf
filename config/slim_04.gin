@@ -4,4 +4,6 @@ experiment.Recommender = @LinearRecommender
 # experiment.cap = 10000
 
 LinearRecommender.density = 0.01
+LinearRecommender.incremental = True
+LinearRecommender.batch_size = 200
 LinearRecommender.save_weights = False
