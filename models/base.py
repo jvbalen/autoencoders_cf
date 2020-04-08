@@ -25,7 +25,7 @@ class BaseRecommender(object):
         """
         raise NotImplementedError()
 
-    def evaluate(self, x_val, y_val):
+    def evaluate(self, x_val, y_val, other_metrics=None):
         """Evaluate model on observed and unobserved validation data x_val, y_val
         """
         batch_metrics = defaultdict(list)
@@ -41,6 +41,8 @@ class BaseRecommender(object):
             batch_metrics['bce'].extend(binary_crossentropy_from_logits(y_pred, y))
 
         metrics = {k: np.mean(v) for k, v in batch_metrics.items()}
+        if other_metrics:
+            metrics.update(other_metrics)
         self.logger.log_metrics(metrics, config=gin.operative_config_str())
 
         return metrics
