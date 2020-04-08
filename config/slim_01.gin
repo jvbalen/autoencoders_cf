@@ -1,0 +1,12 @@
+# incemental SLIM - 99 pct sparse
+
+experiment.Recommender = @LinearRecommender
+experiment.cap = 10000
+
+LinearRecommender.save_weights = False
+LinearRecommender.weights_fn = @naive_incremental_slim
+# LinearRecommender.target_density = 0.01
+
+naive_incremental_slim.l2_reg = 1.0
+naive_incremental_slim.batch_size = 1000
+naive_incremental_slim.target_density = 0.01

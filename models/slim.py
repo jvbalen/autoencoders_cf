@@ -106,12 +106,6 @@ class Clock(object):
         self.tic()
 
 
-@gin.configurable
-def closed_form_slim(x, l2_reg=500):
-
-    return closed_form_slim_from_gramm(x.T @ x, l2_reg=l2_reg)
-
-
 def closed_form_slim_from_gramm(gramm, l2_reg=500):
 
     if issparse(gramm):
@@ -126,9 +120,15 @@ def closed_form_slim_from_gramm(gramm, l2_reg=500):
 
 
 @gin.configurable
-def block_slim_steck(x, l2_reg=1.0, row_nnz=1000, target_density=0.01, r_blanket=0.5, max_iter=None):
-    """Sparse but approximate 'block-wise' variant of
-    the closed-form slim algorithm. Both algorithms due to Steck.
+def closed_form_slim(x, l2_reg=500):
+
+    return closed_form_slim_from_gramm(x.T @ x, l2_reg=l2_reg)
+
+
+@gin.configurable
+def block_slim(x, l2_reg=1.0, row_nnz=1000, target_density=0.01, r_blanket=0.5, max_iter=None):
+    """Sparse but approximate 'block-wise' variant of the closed-form slim algorithm.
+    Both algorithms due to Steck.
 
     POTENTIAL IMPROVEMENTS:
     - still takes a lot of iterations - currently ~10K blocks
@@ -168,42 +168,13 @@ def block_slim_steck(x, l2_reg=1.0, row_nnz=1000, target_density=0.01, r_blanket
     return B
 
 
-def gen_submatrices(A, r_blanket=0.5, max_iter=None):
-    """Generates square submatrices, represented as sets of items,
-    plus binary weights indicating which items are in the present
-    submatrix' "markov blanket" as defined by Steck in [1]--
-    this will be 1 item if r_blanket = 0, or all if r_blanket = 1
-
-    Using a list comprehension rather than np.setdiff1d at the end
-    since set diff doesn't preserve order.
-
-    [1] Steck, Harald. "Markov Random Fields for Collaborative Filtering."
-    Advances in Neural Information Processing Systems. 2019.
-    """
-    sort_scores = A.getnnz(axis=1) + 0.5 * A.diagonal() / A.diagonal().max()
-    ind_list = np.argsort(-sort_scores)
-
-    i = 0
-    while len(ind_list) and (max_iter is None or i < max_iter):
-        _, sub, vals = sp.sparse.find(A[ind_list[0]])
-        if len(sub) < 2:
-            ind_list = ind_list[1:]
-            continue
-        thr = np.percentile(np.abs(vals), 100 * r_blanket)
-        markov_blanket = vals >= thr
-        yield sub, markov_blanket
-        drop = set(sub[markov_blanket])
-        ind_list = [i for i in ind_list if i not in drop]
-        print(f'  {len(ind_list)} remaining...')
-        i += 1
-
-
 @gin.configurable
-def sparse_parameter_estimation(train_data, alpha=0.75, threshold=50, rr=0.5, maxInColumn=1000, L2reg=1.0,
-                                max_iter=None, sparse_gramm=True):
+def block_slim_steck(train_data, alpha=0.75, threshold=50, rr=0.5, maxInColumn=1000, L2reg=1.0,
+                     max_iter=None, sparse_gramm=True):
     """Sparse but approximate 'block-wise' variant of the closed-form slim algorithm.
-    Both algorithms due to Steck. This is a close adaptation of Steck's implementation,
-    released with [1]. It "implements section 3.2 in the paper".
+    Both algorithms due to Steck.
+    This implementation is a close adaptation of Steck's code released with [1].
+    It "implements section 3.2 in the paper".
 
     [1] Steck, Harald. "Markov Random Fields for Collaborative Filtering."
     Advances in Neural Information Processing Systems. 2019.
@@ -403,12 +374,34 @@ def naive_incremental_slim(x, batch_size=50, l2_reg=10, target_density=1.0):
     return B
 
 
-def drop_empty_cols(X):
+def gen_submatrices(A, r_blanket=0.5, max_iter=None):
+    """Generates square submatrices, represented as sets of items,
+    plus binary weights indicating which items are in the present
+    submatrix' "markov blanket" as defined by Steck in [1]--
+    this will be 1 item if r_blanket = 0, or all if r_blanket = 1
 
-    active_cols = np.unique(X.tocoo().col)
-    X_sub = X.tocsc()[:, active_cols]
+    Using a list comprehension rather than np.setdiff1d at the end
+    since set diff doesn't preserve order.
 
-    return X_sub, active_cols
+    [1] Steck, Harald. "Markov Random Fields for Collaborative Filtering."
+    Advances in Neural Information Processing Systems. 2019.
+    """
+    sort_scores = A.getnnz(axis=1) + 0.5 * A.diagonal() / A.diagonal().max()
+    ind_list = np.argsort(-sort_scores)
+
+    i = 0
+    while len(ind_list) and (max_iter is None or i < max_iter):
+        _, sub, vals = sp.sparse.find(A[ind_list[0]])
+        if len(sub) < 2:
+            ind_list = ind_list[1:]
+            continue
+        thr = np.percentile(np.abs(vals), 100 * r_blanket)
+        markov_blanket = vals >= thr
+        yield sub, markov_blanket
+        drop = set(sub[markov_blanket])
+        ind_list = [i for i in ind_list if i not in drop]
+        print(f'  {len(ind_list)} remaining...')
+        i += 1
 
 
 def add_submatrix(A, dA, where=None, prune_sub=False, target_density=1.0, max_density=None):
@@ -444,3 +437,11 @@ def gen_batches(x, batch_size=100):
         print('batch {}/{}...'.format(i_batch + 1, n_batches))
         end = min(start + batch_size, n_examples)
         yield x[start:end]
+
+
+def drop_empty_cols(X):
+
+    active_cols = np.unique(X.tocoo().col)
+    X_sub = X.tocsc()[:, active_cols]
+
+    return X_sub, active_cols
