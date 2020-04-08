@@ -4,11 +4,12 @@ experiment.Recommender = @DistilledRecommender
 
 DistilledRecommender.teacher = @LinearRecommenderFromFile()
 DistilledRecommender.weights_path = '/Users/jan/experiments/autoencoders/slim/weights_pruned_01.npz'
+DistilledRecommender.n_epochs = 30
 
 LinearRecommenderFromFile.path = '/Users/jan/experiments/autoencoders/slim/weights.npz'
 
-WAE.randomize_inits = False
+WAE.randomize_inits = True
 WAE.keep_prob = 0.5
 WAE.lam = 0.0
 WAE.loss = "mse"
-WAE.lr = 1e-3
+WAE.lr = 3e-4

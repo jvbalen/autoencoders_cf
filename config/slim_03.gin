@@ -1,0 +1,11 @@
+# cluster-based block-wise SLIM
+
+experiment.Recommender = @LinearRecommender
+# experiment.cap = 10000
+
+LinearRecommender.save_weights = False
+LinearRecommender.weights_fn = @block_slim_steck
+
+block_slim_steck.L2reg = 1.0
+block_slim_steck.rr = 0.5
+# block_slim_steck.max_iter = 1000

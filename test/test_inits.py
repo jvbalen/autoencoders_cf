@@ -10,7 +10,6 @@ from scipy.sparse import random
 from data import DataLoader
 from util import prune, save_weights, to_float32
 from preprocessing import preprocess
-from models.skl import SKLRecommender
 from models.slim import LinearRecommenderFromFile
 from models.tf import TFRecommender, WAE
 
@@ -81,7 +80,7 @@ def test_wae_experiment(tmp_path):
                                                path=weights_path)
     np_metrics = np_recommender.train(x_train, y_train, x_val, y_val)
 
-    for k in ['val_ndcg', 'val_r100']:
+    for k in ['ndcg', 'r100']:
         assert 0.0 < tf_metrics[k] < 1.0  # should be non-trivial
         assert np.allclose(tf_metrics[k], np_metrics[k])
 
@@ -118,7 +117,7 @@ def compare_skl_wae_real_weights(log_dir, data_path, weights_path, cap=None):
                                                path=weights_path)
     np_metrics = np_recommender.train(x_train, y_train, x_val, y_val)
 
-    for k in ['val_ndcg', 'val_r100']:
+    for k in ['ndcg', 'r100']:
         assert 0.0 < tf_metrics[k] < 1.0  # should be non-trivial
         assert np.allclose(tf_metrics[k], np_metrics[k])
 

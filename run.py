@@ -33,7 +33,6 @@ if __name__ == '__main__':
 
     parser = ArgumentParser()
     parser.add_argument('--data', help='directory containing pre-processed dataset', type=str)
-    parser.add_argument('--cap', help='cap train/val data for debugging', type=int, default=None)
     parser.add_argument('--logdir', help='log directory', type=str)
     parser.add_argument('--config', help='path to gin config file', type=str, default=None)
     args = parser.parse_args()
@@ -42,5 +41,5 @@ if __name__ == '__main__':
     if args.config:
         gin.parse_config_file(args.config)
 
-    metrics = experiment(args.data, log_dir=args.logdir, cap=args.cap)
+    metrics = experiment(args.data, log_dir=args.logdir)
     print(metrics)

@@ -43,7 +43,7 @@ class Logger(object):
             print('`coefs` is None: nothing to save')
 
 
-def prune_global(x, target_density=0.005):
+def prune_global(x, target_density=0.005, copy=True):
     """Prune a 2d np.array or sp.sparse matrix by setting elements
     with low absolute value to 0.0 and return as a sp.sparse.csr_matrix.
 
@@ -53,16 +53,20 @@ def prune_global(x, target_density=0.005):
     """
     target_nnz = int(target_density * np.prod(x.shape))
     if issparse(x):
-        x_sp = x.copy().tocsr()
+        if copy:
+            x_sp = x.copy()
         x_sp.eliminate_zeros()
         if x_sp.nnz <= target_nnz:
             return x_sp
-
-        thr = np.partition(np.abs(x_sp.data), kth=-target_nnz)[-target_nnz]
-        x_sp.data[np.abs(x_sp.data) < thr] = 0.0
+        thr = get_pruning_threshold(x, target_density=target_density)
+        try:
+            x_sp.data[np.abs(x_sp.data) < thr] = 0.0
+        except AttributeError:
+            x_sp = x_sp.tocsr()
+            x_sp.data[np.abs(x_sp.data) < thr] = 0.0
     else:
         x = x.copy()
-        thr = np.quantile(np.abs(x), 1.0-target_density)
+        thr = get_pruning_threshold(x, target_density=target_density)
         x[np.abs(x) < thr] = 0.0
         x_sp = csr_matrix(x)
     x_sp.eliminate_zeros()
@@ -111,6 +115,25 @@ def prune(x, target_density=0.005, row_nnz=None):
     x_rows = prune_rows(x, target_nnz=row_nnz)
 
     return sparse_union(x_glob, x_rows)
+
+
+def get_pruning_threshold(x, target_density=0.005):
+    """Get the pruning threshold for a sparse or dense array given
+    a desired density.
+    """
+    if issparse(x):
+        try:
+            abs_values = np.abs(x.data)
+        except AttributeError:
+            abs_values = np.abs(x.tocoo().data)
+        target_nnz = int(target_density * np.prod(x.shape))
+        if target_nnz > len(abs_values):
+            return 0.0
+        thr = np.partition(abs_values, kth=-target_nnz)[-target_nnz]
+    else:
+        thr = np.quantile(np.abs(x), 1.0-target_density)
+
+    return thr
 
 
 def sparse_union(x, y):
@@ -168,6 +191,24 @@ def load_weights(path):
             biases = data.get('intercepts', None)
 
     return weights, biases
+
+
+def gen_batches(x, y=None, batch_size=100, shuffle=False, print_interval=1):
+    """Generate batches from data arrays x and y
+    """
+    n_examples = x.shape[0]
+    n_batches = int(np.ceil(n_examples / batch_size))
+    inds = list(range(n_examples))
+    if shuffle:
+        np.random.shuffle(inds)
+    for i_batch, start in enumerate(range(0, n_examples, batch_size)):
+        end = min(start + batch_size, n_examples)
+        if i_batch % print_interval == 0:
+            print('  batch {}/{}...'.format(i_batch + 1, n_batches))
+        if y is None:
+            yield x[inds[start:end]], None
+        else:
+            yield x[inds[start:end]], y[inds[start:end]]
 
 
 def sparse_info(m):
