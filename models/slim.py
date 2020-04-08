@@ -406,12 +406,11 @@ def gen_submatrices(A, r_blanket=0.5, max_iter=None):
 
 def add_submatrix(A, dA, where=None, prune_sub=False, target_density=1.0, max_density=None):
     """Add submatrix `sub` to `A` at indices `where = (rows, cols)`.
-    Optionally ensure the result is sparse with density `target_density`
+    Optionally prune the result down to density `target_density`
 
-    TODO: this doesn't cut it for block_slim_steck where we
-    add to a matrix that contains summed submatrices before
-    normalizing by the number of matrices summed--as a result
-    values are not comparable across all of B
+    NOTE: do not use with target_density < 1.0 when summing
+    matrices before normalizing the sum by the number of
+    matrices summed -- pruning won't be correct
     """
     if max_density is None:
         max_density = 3 * target_density
@@ -422,9 +421,7 @@ def add_submatrix(A, dA, where=None, prune_sub=False, target_density=1.0, max_de
     A += dA
     if A.nnz > max_density * np.prod(A.shape):
         print(f'  density > max_density: pruning result')
-        thr = get_pruning_threshold(A.tocsr(), target_density=target_density)
-        A.data[np.abs(A.data) < thr] = 0.0
-        A.eliminate_zeros()
+        A = prune_global(A, target_density=target_density, copy=False)
 
     return A
 

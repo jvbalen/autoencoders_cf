@@ -43,7 +43,7 @@ class Logger(object):
             print('`coefs` is None: nothing to save')
 
 
-def prune_global(x, target_density=0.005):
+def prune_global(x, target_density=0.005, copy=True):
     """Prune a 2d np.array or sp.sparse matrix by setting elements
     with low absolute value to 0.0 and return as a sp.sparse.csr_matrix.
 
@@ -53,12 +53,17 @@ def prune_global(x, target_density=0.005):
     """
     target_nnz = int(target_density * np.prod(x.shape))
     if issparse(x):
-        x_sp = x.copy().tocsr()
+        if copy:
+            x_sp = x.copy()
         x_sp.eliminate_zeros()
         if x_sp.nnz <= target_nnz:
             return x_sp
         thr = get_pruning_threshold(x, target_density=target_density)
-        x_sp.data[np.abs(x_sp.data) < thr] = 0.0
+        try:
+            x_sp.data[np.abs(x_sp.data) < thr] = 0.0
+        except AttributeError:
+            x_sp = x_sp.tocsr()
+            x_sp.data[np.abs(x_sp.data) < thr] = 0.0
     else:
         x = x.copy()
         thr = get_pruning_threshold(x, target_density=target_density)
