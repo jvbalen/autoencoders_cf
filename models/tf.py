@@ -7,7 +7,7 @@ import tensorflow as tf
 from tensorflow.contrib.layers import apply_regularization, l2_regularizer
 
 from models.base import BaseRecommender
-from util import Logger, load_weights, to_float32
+from util import Logger, load_weights, gen_batches, to_float32
 
 gin.external_configurable(tf.train.GradientDescentOptimizer)
 gin.external_configurable(tf.train.AdamOptimizer)
@@ -56,7 +56,7 @@ class TFRecommender(BaseRecommender):
 
     def train_one_epoch(self, x_train, y_train, x_val=None, y_val=None,
                         print_interval=1):
-        for x, y in self.gen_batches(x_train, y_train):
+        for x, y in gen_batches(x_train, y_train, batch_size=self.batch_size):
             x, y = self.prepare_batch(x, y)
             feed_dict = {self.model.input_ph: x, self.model.label_ph: y}
             summary_train, _ = self.sess.run([self.model.summaries, self.model.train_op],

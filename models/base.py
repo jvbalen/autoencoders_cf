@@ -5,7 +5,7 @@ import numpy as np
 
 from metric import ndcg_binary_at_k_batch, recall_at_k_batch, \
     binary_crossentropy_from_logits, count_finite
-from util import Logger
+from util import Logger, gen_batches
 
 
 class BaseRecommender(object):
@@ -29,7 +29,7 @@ class BaseRecommender(object):
         """Evaluate model on observed and unobserved validation data x_val, y_val
         """
         batch_metrics = defaultdict(list)
-        for x, y in self.gen_batches(x_val, y_val):
+        for x, y in gen_batches(x_val, y_val, batch_size=self.batch_size):
             y_pred, loss = self.predict(x, y)
             batch_metrics['fin'].extend(count_finite(y_pred))
             batch_metrics['loss'].append(loss)
@@ -46,20 +46,3 @@ class BaseRecommender(object):
         self.logger.log_metrics(metrics, config=gin.operative_config_str())
 
         return metrics
-
-    def gen_batches(self, x, y=None, shuffle=False, print_interval=1):
-        """Generate batches from data arrays x and y
-        """
-        n_examples = x.shape[0]
-        n_batches = int(np.ceil(n_examples / self.batch_size))
-        inds = list(range(n_examples))
-        if shuffle:
-            np.random.shuffle(inds)
-        for i_batch, start in enumerate(range(0, n_examples, self.batch_size)):
-            end = min(start + self.batch_size, n_examples)
-            if i_batch % print_interval == 0:
-                print('batch {}/{}...'.format(i_batch + 1, n_batches))
-            if y is None:
-                yield x[inds[start:end]], None
-            else:
-                yield x[inds[start:end]], y[inds[start:end]]

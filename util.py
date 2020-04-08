@@ -193,6 +193,24 @@ def load_weights(path):
     return weights, biases
 
 
+def gen_batches(x, y=None, batch_size=100, shuffle=False, print_interval=1):
+    """Generate batches from data arrays x and y
+    """
+    n_examples = x.shape[0]
+    n_batches = int(np.ceil(n_examples / batch_size))
+    inds = list(range(n_examples))
+    if shuffle:
+        np.random.shuffle(inds)
+    for i_batch, start in enumerate(range(0, n_examples, batch_size)):
+        end = min(start + batch_size, n_examples)
+        if i_batch % print_interval == 0:
+            print('  batch {}/{}...'.format(i_batch + 1, n_batches))
+        if y is None:
+            yield x[inds[start:end]], None
+        else:
+            yield x[inds[start:end]], y[inds[start:end]]
+
+
 def sparse_info(m):
     """Print some information about a scipcy.sparse matrix"""
     print("{} of {}".format(type(m), m.dtype))

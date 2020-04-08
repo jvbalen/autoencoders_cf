@@ -319,7 +319,7 @@ def woodbury_slim(x, l2_reg=500, batch_size=100, target_density=100.0, extra_reg
     """
     n_users, n_items = x.shape
     P = eye(n_items).tocsr() / l2_reg
-    for x_batch in gen_batches(x, batch_size=batch_size):
+    for x_batch, _ in gen_batches(x, batch_size=batch_size):
         print('  subsetting...')
         inds = np.unique(x_batch.tocoo().col)
         x_batch = x_batch.tocsc()[:, inds]
@@ -361,7 +361,7 @@ def naive_incremental_slim(x, batch_size=50, l2_reg=10, target_density=1.0):
     """
     n_users, n_items = x.shape
     B = csr_matrix((n_items, n_items))
-    for x_batch in gen_batches(x, batch_size=batch_size):
+    for x_batch, _ in gen_batches(x, batch_size=batch_size):
         print('  submatrix...')
         XS, cols = drop_empty_cols(x_batch)
         print('  computing slim B for batch...')
@@ -424,17 +424,7 @@ def add_submatrix(A, dA, where=None, prune_sub=False, target_density=1.0, max_de
         A = prune_global(A, target_density=target_density, copy=False)
 
     return A
-
-
-def gen_batches(x, batch_size=100):
-
-    n_examples = x.shape[0]
-    n_batches = int(np.ceil(n_examples / batch_size))
-    for i_batch, start in enumerate(range(0, n_examples, batch_size)):
-        print('batch {}/{}...'.format(i_batch + 1, n_batches))
-        end = min(start + batch_size, n_examples)
-        yield x[start:end]
-
+    
 
 def drop_empty_cols(X):
 
