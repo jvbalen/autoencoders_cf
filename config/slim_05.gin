@@ -1,0 +1,11 @@
+# sparse SVD slim
+
+experiment.Recommender = @LinearRecommender
+# experiment.cap = 10000
+
+LinearRecommender.save_weights = False
+LinearRecommender.weights_fn = @svd_slim
+LinearRecommender.target_density = 0.01
+
+svd_slim.k = 10
+svd_slim.l2_reg = 500.0

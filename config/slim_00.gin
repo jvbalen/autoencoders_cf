@@ -1,0 +1,7 @@
+# incemental SLIM - 99 pct sparse
+
+experiment.Recommender = @LinearRecommender
+experiment.cap = 10000
+
+LinearRecommender.save_weights = False
+LinearRecommender.target_density = 0.01

@@ -1,0 +1,11 @@
+# sparse cholesky embeddings
+
+experiment.Recommender = @EmbeddingRecommender
+# experiment.cap = 10000
+
+EmbeddingRecommender.save_embeddings = False
+EmbeddingRecommender.embedding_fn = @cholesky_embeddings
+
+cholesky_embeddings.l2_reg = 500.0
+cholesky_embeddings.row_nnz = 100
+cholesky_embeddings.sort_by_nn = False

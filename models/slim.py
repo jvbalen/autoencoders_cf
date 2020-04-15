@@ -6,8 +6,8 @@ from warnings import warn
 import gin
 import numpy as np
 import scipy as sp
-from scipy.sparse import linalg, csr_matrix, csc_matrix, coo_matrix, issparse, eye, vstack
-from sksparse.cholmod import cholesky, cholesky_AAt, analyze_AAt
+from scipy.sparse import csr_matrix, csc_matrix, coo_matrix, issparse, eye
+from sksparse.cholmod import cholesky
 from sklearn.decomposition import TruncatedSVD
 
 from models.base import BaseRecommender
@@ -78,7 +78,7 @@ class EmbeddingRecommender(BaseRecommender):
         self.embeddings = None
         self.priors = None
         if self.embedding_fn is None:
-            self.embedding_fn = sparse_embeddings
+            self.embedding_fn = cholesky_embeddings
         super().__init__(log_dir, batch_size=batch_size)
 
     def train(self, x_train, y_train, x_val, y_val):
@@ -181,122 +181,9 @@ def closed_form_slim(x, l2_reg=500):
 
 
 @gin.configurable
-def cholesky_slim(x, l2_reg=500, row_nnz=None, drop_zero_cols=False):
-    clock = Clock()
-    _, n_items = x.shape
+def cholesky_slim(x, l2_reg=500, beta=2.0, row_nnz=None, sort_by_nn=False, zero_diag=True):
 
-    print('computing gramm matrix')
-    gramm = (x.T @ x).astype(np.float32)
-    if issparse(gramm):
-        gramm = gramm.toarray()
-    diag_indices = np.diag_indices(gramm.shape[0])
-    gramm[diag_indices] += l2_reg
-    clock.print_interval()
-
-    print('computing inverse')
-    inv_gramm = np.linalg.inv(gramm)
-    lower = sp.linalg.cholesky(inv_gramm, lower=True)
-    lower = prune_rows(lower, target_nnz=row_nnz)
-    print(f'  dens(lower) = {lower.nnz / np.prod(lower.shape)}')
-    print(f'  np.mean(lower.getnnz(axis=1) > 0) = {np.mean(lower.getnnz(axis=1) > 0)}')
-    inv_gramm = lower @ lower.T
-    clock.print_interval()
-
-    print('computing weights')
-    if row_nnz is None:
-        weights = inv_gramm / (-np.diag(inv_gramm))
-        weights[diag_indices] = 0.0
-    else:
-        diag_indices = np.diag_indices(n_items)
-        inv_diag = 1./inv_gramm.diagonal()
-        inv_diag[inv_gramm.diagonal() == 0] = 1.0
-        weights = - inv_gramm.multiply(inv_diag).tocsr()
-        weights[diag_indices] = 0.0
-    clock.print_interval()
-
-    return weights
-
-
-@gin.configurable
-def cholesky_slim_sparse(x, l2_reg=500, row_nnz=None, batch_size=100, beta=2.0, prune_p=True):
-    """
-    The main idea:
-        G = x.T @ x the gramm matrix
-        L = cholesky(G) such that G = L @ L.T
-        L_inv = inv(L)
-        embs = prune_rows(L_inv)  # this is what we're after
-        inv_gramm = embs @ embs.T
-        weights = - inv_gramm / np.diag(inv_gramm)
-        weights[diag] = 0
-
-    Ideally we have a good sparse "Q-less" QR method (i.e. that doesn't explicitly compute Q)
-    so that we can do:
-        R, = QR(x, mode='r')
-        L_inv = inv(R)
-        embs = prune_rows(L_inv)  # this is what we're after
-        etc (as above)
-    but we don't so parking that idea for now.
-    (Idea from here: https://scicomp.stackexchange.com/a/3219)
-
-    However, perhaps we can use sksparse.cholmod, which computes cholesky(A A.T + beta * I)
-    """
-    clock = Clock()
-    _, n_items = x.shape
-    x = x.tocsr()
-    print('computing factorization (lazy: some work will be done later)')
-    if batch_size is None:
-        factor = cholesky_AAt(x.T, beta=l2_reg, ordering_method='natural')
-    else:
-        factor = analyze_AAt(x[:n_items].T, ordering_method='natural')
-        for x_batch, _ in gen_batches(x, batch_size=batch_size):
-            factor.update_inplace(x_batch.T)
-    clock.print_interval()
-
-    print('computing embeddings from factors')
-    # v = inv(Pt L) so that v.T v = inv(Lt P) inv(Pt L) = inv(Pt L Lt P) = inv(AAt)
-    if batch_size is None:
-        L_G = factor.L().toarray()
-        L_P = sp.linalg.inv(L_G, overwrite_a=True)
-    else:
-        # broken atm? what are we pruning? rows, cols? cols within batches?
-        # we want col-wise batches, so batching and transposing
-        L_P = []
-        for e_batch, _ in gen_batches(eye(n_items).tocsr(), batch_size=batch_size):
-            l_batch_t = factor.solve_L(e_batch.T)
-            l_batch = prune_rows(l_batch_t.T, target_nnz=row_nnz)
-            L_P.append(l_batch)
-        L_P = vstack(L_P)
-    clock.print_interval()
-    print('pruning P')
-    L_P = prune_rows(L_P, target_nnz=row_nnz)
-    clock.print_interval()
-
-    print('reconstructing inverse gramm')
-    P = L_P.T @ L_P
-    diag_indices = np.diag_indices(n_items)
-    diag_P = np.ravel(P[diag_indices])
-    beta = np.max(diag_P) * beta
-    factor.cholesky_inplace(-P, beta=beta)
-    E = factor.L()
-    clock.print_interval()
-
-    print('pruning')
-    E = prune_rows(E, target_nnz=row_nnz)
-    clock.print_interval()
-
-    print('computing weights')
-    prior = 1./diag_P
-    prior[diag_P == 0] = 1.0
-    weights = E @ E.T.multiply(prior)
-    clock.print_interval()
-
-    return weights
-
-
-@gin.configurable
-def cholesky_slim_b(x, l2_reg=500, beta=2.0, row_nnz=None, eigen=False, sort_by_nn=False, zero_diag=True):
-
-    E, prior = sparse_embeddings(x, l2_reg=l2_reg, beta=beta, row_nnz=row_nnz, eigen=eigen, sort_by_nn=sort_by_nn)
+    E, prior = cholesky_embeddings(x, l2_reg=l2_reg, beta=beta, row_nnz=row_nnz, sort_by_nn=sort_by_nn)
     B = E @ E.T.multiply(prior.reshape(1, -1))
     if zero_diag:
         B[np.diag_indices(E.shape[0])] = 0.0
@@ -305,7 +192,7 @@ def cholesky_slim_b(x, l2_reg=500, beta=2.0, row_nnz=None, eigen=False, sort_by_
 
 
 @gin.configurable
-def sparse_embeddings(x, l2_reg=500, beta=2.0, row_nnz=None, eigen=False, n_components=None, sort_by_nn=False):
+def cholesky_embeddings(x, l2_reg=500, beta=2.0, row_nnz=None, sort_by_nn=False):
     """Cholesky factors of -P + beta * I
 
     If we're only interested in recommending new items, changes
@@ -335,16 +222,7 @@ def sparse_embeddings(x, l2_reg=500, beta=2.0, row_nnz=None, eigen=False, n_comp
     print('factorizing -P + beta * diag_P')
     A = -P
     A[diag_indices] += beta * diag_P
-    if eigen:
-        # svd = TruncatedSVD(n_components=n_components).fit(A)
-        U, w, Vt = linalg.svds(A, k=n_components)
-        print(type(Vt), type(w), Vt.shape, w.shape)
-        print((w > 0).mean())
-        signs = np.sign(Vt[:, 1] / U[1].T)
-        w, Vt = w * signs, Vt * signs.reshape(-1, 1)
-        print((w > 0).mean())
-        E = Vt.T * np.sqrt(w)
-    elif G.nnz / np.prod(G.shape) > 0.15:
+    if G.nnz / np.prod(G.shape) > 0.15:
         E = sp.linalg.cholesky(A, lower=True)
     else:
         A = csc_matrix((A[G.nonzero()], G.nonzero()), shape=G.shape)
@@ -367,9 +245,8 @@ def sparse_embeddings(x, l2_reg=500, beta=2.0, row_nnz=None, eigen=False, n_comp
 
 
 @gin.configurable
-def svd_slim(x, k=10, l2_reg=500.0):
+def svd_slim(x, k=100, l2_reg=500.0):
 
-    # _, Sx, Vt = linalg.svds(x, k=k)
     svd = TruncatedSVD(n_components=k).fit(x)
     Sx, Vt = svd.singular_values_, svd.components_
 
@@ -377,27 +254,6 @@ def svd_slim(x, k=10, l2_reg=500.0):
     Dp = (Vt.T**2 * Sp).sum(axis=1)
 
     return - Vt.T * Sp @ Vt / Dp
-
-
-@gin.configurable
-def svd_embeddings(x, k=10, l2_reg=500.0, beta=2.0, row_nnz=None):
-
-    # _, Sx, Vt = linalg.svds(x, k=k)
-    mod = TruncatedSVD(n_components=k).fit(x)
-    Sx, Vt = mod.singular_values_, mod.components_
-    Sp = 1 / (Sx**2 + l2_reg)  # singular values of P = inv(x.T @ x + l2_reg * I)
-    Dp = (Vt.T**2 * Sp).sum(axis=1)  # diagonal of P
-
-    # Sb = beta * Vt * Dp @ Vt.T - np.diag(Sp)
-    # Lb = cholesky_or_similar(Sb)  # can't just sqrt as S is not diagonal thx to Dp
-    # E = Vt.T @ Lb
-    E = Vt.T * np.sqrt(beta - Sp)
-    print(E.shape)
-
-    if row_nnz is not None:
-        E = prune_rows(E, target_nnz=row_nnz)
-
-    return E, 1. / Dp
 
 
 @gin.configurable
