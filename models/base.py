@@ -1,3 +1,4 @@
+import time
 from collections import defaultdict
 
 import gin
@@ -28,9 +29,12 @@ class BaseRecommender(object):
     def evaluate(self, x_val, y_val, other_metrics=None):
         """Evaluate model on observed and unobserved validation data x_val, y_val
         """
+        prediction_time = 0
         batch_metrics = defaultdict(list)
         for x, y in gen_batches(x_val, y_val, batch_size=self.batch_size):
+            t1 = time.perf_counter()
             y_pred, loss = self.predict(x, y)
+            prediction_time += time.perf_counter() - t1
             batch_metrics['fin'].extend(count_finite(y_pred))
             batch_metrics['loss'].append(loss)
 
@@ -41,6 +45,7 @@ class BaseRecommender(object):
             batch_metrics['bce'].extend(binary_crossentropy_from_logits(y_pred, y))
 
         metrics = {k: np.mean(v) for k, v in batch_metrics.items()}
+        metrics['prediction_time'] = prediction_time
         if other_metrics:
             metrics.update(other_metrics)
         self.logger.log_metrics(metrics, config=gin.operative_config_str())
