@@ -7,7 +7,6 @@ import gin
 import numpy as np
 import scipy as sp
 from scipy.sparse import csr_matrix, csc_matrix, coo_matrix, issparse, eye
-from sksparse.cholmod import cholesky
 from sklearn.decomposition import TruncatedSVD
 
 from models.base import BaseRecommender
@@ -225,6 +224,7 @@ def cholesky_embeddings(x, l2_reg=500, beta=2.0, row_nnz=None, sort_by_nn=False)
     if G.nnz / np.prod(G.shape) > 0.15:
         E = sp.linalg.cholesky(A, lower=True)
     else:
+        from sksparse.cholmod import cholesky
         A = csc_matrix((A[G.nonzero()], G.nonzero()), shape=G.shape)
         E = cholesky(A, ordering_method='natural').L()
     clock.print_interval()
