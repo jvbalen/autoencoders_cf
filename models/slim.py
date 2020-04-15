@@ -112,7 +112,7 @@ class EmbeddingRecommender(BaseRecommender):
         y = h @ self.embeddings.T
         if self.priors is not None:
             priors = np.reshape(self.priors, (1, -1))
-            y = y.multiply(priors) if issparse(y) else y * priors
+            y = y.multiply(priors).tocsr() if issparse(y) else y * priors
 
         return y, np.nan
 
@@ -146,7 +146,7 @@ class LinearRecommenderFromFile(BaseRecommender):
 class Clock(object):
 
     def __init__(self):
-        self.t0 = 0
+        self.t0 = time.perf_counter()
 
     def tic(self):
         self.t0 = time.perf_counter()
