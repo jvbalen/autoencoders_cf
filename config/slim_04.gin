@@ -6,5 +6,5 @@ experiment.Recommender = @LinearRecommender
 LinearRecommender.save_weights = False
 LinearRecommender.weights_fn = @cholesky_slim
 
-cholesky_slim.l2_reg = 500.0
-cholesky_slim.row_nnz = 100
+cholesky_slim.l2_reg = 200.0
+cholesky_slim.row_nnz = 120
