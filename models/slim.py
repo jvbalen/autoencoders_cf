@@ -6,8 +6,7 @@ from warnings import warn
 import gin
 import numpy as np
 import scipy as sp
-from scipy.sparse import csr_matrix, csc_matrix, coo_matrix, issparse, eye
-from sklearn.decomposition import TruncatedSVD
+from scipy.sparse import linalg, csr_matrix, csc_matrix, coo_matrix, issparse, eye
 
 from models.base import BaseRecommender
 from util import load_weights, prune_global, prune_rows, gen_batches
@@ -245,15 +244,116 @@ def cholesky_embeddings(x, l2_reg=500, beta=2.0, row_nnz=None, sort_by_nn=False)
 
 
 @gin.configurable
-def svd_slim(x, k=100, l2_reg=500.0):
+def svd_slim(X, l2_reg=1.0, beta=2.0, row_nnz=None, k=10):
+    """SVD-based low-rank SLIM
 
-    svd = TruncatedSVD(n_components=k).fit(x)
-    Sx, Vt = svd.singular_values_, svd.components_
+    NOTE: broken? This appears to do the right thing on small data
+    when swapping the SVD out for a dense version,
+    but the sparse version doesn't give useful results.
+    """
+    clock = Clock()
+    print('computing SVD...')
+    _, sx, Vt = linalg.svds(X, k=k)
+    U, s, Vt = Vt.T, 1 / (sx**2 + l2_reg), Vt  # SVD of P
+    clock.print_interval()
 
-    Sp = 1 / (Sx**2 + l2_reg)
-    Dp = (Vt.T**2 * Sp).sum(axis=1)
+    print('computing weights B...')
+    diag_P = np.sum(U**2 * s, axis=1)
+    Vt = beta * Vt - s.reshape(-1, 1) * Vt / diag_P
+    clock.print_interval()
 
-    return - Vt.T * Sp @ Vt / Dp
+    return U @ Vt
+
+
+@gin.configurable
+def svd_embeddings(X, k=100, l2_reg=0.0, square=False, row_nnz=None, normalize=False):
+    """SVD-based recommendation
+    """
+    print('computing SVD...')
+    _, s, Vt = linalg.svds(X, k=k)
+    if square:
+        s = s**2
+    s = s + l2_reg
+    Vt = s.reshape(-1, 1) * Vt
+    if row_nnz is not None:
+        Vt = prune_rows(Vt.T, target_nnz=row_nnz).T
+    if normalize:
+        prior = np.linalg.norm(Vt, axis=0)
+        V = (Vt / prior).T
+    else:
+        V = Vt.T
+        prior = None
+
+    return V, prior
+
+
+@gin.configurable
+def block_cholesky(x, l2_reg=1.0, row_nnz=1000, target_density=0.01, r_blanket=0.5, max_iter=None,
+                   beta=2.0, sort_by_nn=False):
+    """
+    NOTE: fails on MSD for beta < 9 with "matrix not positive definite"--
+    quite possibly -diag(B_) isn't a good enough approximation of diag(P)
+    """
+    clock = Clock()
+    print('  computing gramm matrix G')
+    G = (x.T @ x).tocsr().astype(np.float32)
+    clock.print_interval()
+    if sort_by_nn:
+        print('sorting items by number of number of neighbors')
+        items_by_nn = np.argsort(np.ravel(G.getnnz(axis=0)))  # nn = non-zero co-counts
+        G = G[items_by_nn][:, items_by_nn]
+        clock.print_interval()
+
+    print('  computing sparsity pattern A')
+    A = prune_global(G, target_density=target_density)
+    A = prune_rows(A, target_nnz=row_nnz).tocsr()
+    clock.print_interval()
+
+    print('  computing P...')
+    P = csr_matrix(G.shape)
+    blocks = csr_matrix(G.shape)
+    for sub, weights in gen_submatrices(A, r_blanket=r_blanket, max_iter=max_iter):
+        print(f'  computing P_sub of size {len(sub)}...')
+        block = A[sub][:, sub].tocoo().T  # T: limit col nnz rather than row
+        block.data = weights[block.col]
+        G_sub = G[sub][:, sub].toarray()
+        diag_indices = np.diag_indices(len(sub))
+        G_sub[diag_indices] += l2_reg
+        P_sub = np.linalg.inv(G_sub)
+        P_sub = coo_matrix((P_sub[block.nonzero()], block.nonzero()))
+        P_sub.data = P_sub.data * weights[P_sub.col]
+        P = add_submatrix(P, P_sub, where=(sub, sub))
+        blocks = add_submatrix(blocks, block, where=(sub, sub))
+    print(f'  scaling P by number of blocks summed...')
+    P[P.nonzero()] = P[P.nonzero()] / blocks[P.nonzero()]
+    diag_P = np.ravel(P.diagonal())
+    clock.print_interval()
+
+    print('factorizing -P + beta * diag_P')
+    B_ = -P
+    diag_indices = np.diag_indices(B_.shape[0])
+    B_[diag_indices] += beta * diag_P
+    if B_.nnz / np.prod(B_.shape) > 0.15:
+        E = sp.linalg.cholesky(B_, lower=True)
+    else:
+        from sksparse.cholmod import cholesky
+        E = cholesky(B_, ordering_method='natural').L()
+    clock.print_interval()
+    print('pruning factors')
+    E = prune_rows(E, target_nnz=row_nnz)
+    clock.print_interval()
+
+    print('computing priors')
+    diag_P = np.ravel(P.diagonal())
+    prior = 1 / diag_P
+    prior[diag_P == 0] = 0.0
+    if sort_by_nn:
+        print('undo sort items')
+        original_order = np.argsort(items_by_nn)
+        prior = prior[original_order]
+        E = E[original_order]
+
+    return E, prior
 
 
 @gin.configurable
