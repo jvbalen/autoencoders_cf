@@ -6,10 +6,10 @@ from warnings import warn
 import gin
 import numpy as np
 import scipy as sp
-from scipy.sparse import csr_matrix, csc_matrix, coo_matrix, issparse, eye
+from scipy.sparse import linalg, csr_matrix, csc_matrix, coo_matrix, issparse, eye
 
 from models.base import BaseRecommender
-from util import load_weights, prune_global, prune_rows, get_pruning_threshold
+from util import load_weights, prune_global, prune_rows, gen_batches
 
 
 @gin.configurable
@@ -64,6 +64,59 @@ class LinearRecommender(BaseRecommender):
 
 
 @gin.configurable
+class EmbeddingRecommender(BaseRecommender):
+
+    def __init__(self, log_dir, embedding_fn=None, item_nnz=100, batch_size=100, save_embeddings=True):
+        """Embedding recommender.
+        """
+        self.embedding_fn = embedding_fn
+        self.item_nnz = item_nnz
+        self.save_embeddings = save_embeddings
+
+        self.embeddings = None
+        self.priors = None
+        if self.embedding_fn is None:
+            self.embedding_fn = cholesky_embeddings
+        super().__init__(log_dir, batch_size=batch_size)
+
+    def train(self, x_train, y_train, x_val, y_val):
+        """Train and evaluate"""
+        if y_train is not None:
+            warn("SLIM is unsupervised, y_train will be ignored")
+
+        t1 = time.perf_counter()
+        self.embeddings, self.priors = self.embedding_fn(x_train)
+        if self.item_nnz is not None:
+            self.embeddings = prune_rows(self.embeddings, target_nnz=self.item_nnz)
+        dt = time.perf_counter() - t1
+        if self.logger is not None:
+            self.logger.log_config(gin.operative_config_str())
+            if self.save_embeddings:
+                self.logger.save_weights(self.embeddings)
+
+        print('Evaluating...')
+        density = self.embeddings.size / np.prod(self.embeddings.shape)
+        if issparse(self.embeddings):
+            item_nnz = np.mean(np.ravel(self.embeddings.getnnz(axis=1)))
+        else:
+            item_nnz = self.embeddings.shape[1]
+        other_metrics = {'train_time': dt, 'embedding_density': density, 'item_nnz': item_nnz}
+        metrics = self.evaluate(x_val, y_val, other_metrics=other_metrics)
+
+        return metrics
+
+    def predict(self, x, y=None):
+        """Predict scores"""
+        h = x @ self.embeddings
+        y = h @ self.embeddings.T
+        if self.priors is not None:
+            priors = np.reshape(self.priors, (1, -1))
+            y = y.multiply(priors).tocsr() if issparse(y) else y * priors
+
+        return y, np.nan
+
+
+@gin.configurable
 class LinearRecommenderFromFile(BaseRecommender):
 
     def __init__(self, log_dir=None, path=None, batch_size=100):
@@ -92,7 +145,7 @@ class LinearRecommenderFromFile(BaseRecommender):
 class Clock(object):
 
     def __init__(self):
-        self.t0 = 0
+        self.t0 = time.perf_counter()
 
     def tic(self):
         self.t0 = time.perf_counter()
@@ -126,6 +179,60 @@ def closed_form_slim(x, l2_reg=500):
 
 
 @gin.configurable
+def cholesky_embeddings(x, l2_reg=500, beta=2.0, row_nnz=None, sort_by_nn=False):
+    """Cholesky factors of -P + beta * I
+
+    If we're only interested in recommending new items, changes
+    to the diagonal of B are not going to matter, so we might as well do the thing where we
+    apply cholesky to x.T x, invert the resulting lower factor,
+    and feed its transpose back into cholesky_update_AAt with beta = np.max(diag_P) * beta
+    to get E (if that makes sense).
+    """
+    clock = Clock()
+    assert beta > 1.0
+
+    print('computing gramm matrix G')
+    G = x.T @ x
+    diag_indices = np.diag_indices(G.shape[0])
+    G[diag_indices] += l2_reg
+    clock.print_interval()
+    if sort_by_nn:
+        print('sorting items by number of number of neighbors')
+        items_by_nn = np.argsort(np.ravel(G.getnnz(axis=0)))  # nn = non-zero co-counts
+        G = G[items_by_nn][:, items_by_nn]
+        clock.print_interval()
+    print('computing inverse P')
+    P = np.linalg.inv(G.toarray())
+    diag_P = np.diag(P)
+    clock.print_interval()
+
+    print('factorizing -P + beta * diag_P')
+    A = -P
+    A[diag_indices] += beta * diag_P
+    if G.nnz / np.prod(G.shape) > 0.15:
+        E = sp.linalg.cholesky(A, lower=True)
+    else:
+        from sksparse.cholmod import cholesky
+        A = csc_matrix((A[G.nonzero()], G.nonzero()), shape=G.shape)
+        E = cholesky(A, ordering_method='natural').L()
+    clock.print_interval()
+    print('pruning factors')
+    E = prune_rows(E, target_nnz=row_nnz)
+    clock.print_interval()
+
+    print('computing priors')
+    prior = 1 / diag_P
+    prior[diag_P == 0] = 0.0
+    if sort_by_nn:
+        print('undo sort items')
+        original_order = np.argsort(items_by_nn)
+        prior = prior[original_order]
+        E = E[original_order]
+
+    return E, prior
+
+
+@gin.configurable
 def block_slim(x, l2_reg=1.0, row_nnz=1000, target_density=0.01, r_blanket=0.5, max_iter=None):
     """Sparse but approximate 'block-wise' variant of the closed-form slim algorithm.
     Both algorithms due to Steck.
@@ -154,7 +261,7 @@ def block_slim(x, l2_reg=1.0, row_nnz=1000, target_density=0.01, r_blanket=0.5, 
     blocks = csr_matrix(G.shape)
     for sub, weights in gen_submatrices(A, r_blanket=r_blanket, max_iter=max_iter):
         print(f'  computing weights for block of size {len(sub)}...')
-        block = A[sub][:, sub].tocoo()
+        block = A[sub][:, sub].tocoo().T  # T: limit col nnz rather than row
         block.data = weights[block.col]
         B_sub = closed_form_slim_from_gramm(G[sub][:, sub], l2_reg=l2_reg)
         B_sub = coo_matrix((B_sub[block.nonzero()], block.nonzero()))
@@ -296,7 +403,7 @@ def block_slim_steck(train_data, alpha=0.75, threshold=50, rr=0.5, maxInColumn=1
 
 
 @gin.configurable
-def woodbury_slim(x, l2_reg=500, batch_size=100, target_density=100.0, extra_reg=0.0):
+def woodbury_slim(x, l2_reg=500, batch_size=100, target_density=1.0, extra_reg=0.0):
     """Closed-form SLIM with incremental computation of the inverse gramm matrix,
     using the Woodbury matrix identity.
 
@@ -314,7 +421,7 @@ def woodbury_slim(x, l2_reg=500, batch_size=100, target_density=100.0, extra_reg
     - avoid some multiplication overhead by dropping rows and cols for items not involved in `x_batch`
         for most operations this does not affect the solution, however
         in our last step, it does, making this method an approximation
-    - optionally prune each update to conserve memory
+    - optionally prune after updating, to conserve memory
     - optionally add extra regularization to stabilize training
     """
     n_users, n_items = x.shape
@@ -329,17 +436,9 @@ def woodbury_slim(x, l2_reg=500, batch_size=100, target_density=100.0, extra_reg
         XSPSX = XSPS @ x_batch.T
         print('  inverse...')
         B = np.linalg.inv(np.eye(x_batch.shape[0]) * (1.0 + extra_reg) + XSPSX)
-        print('  computing update...')
-        dSPS = - XSPS.T @ B @ XSPS
-        SPS_new = SPS.toarray() + dSPS
-        print('  pruning...')
-        thr = get_pruning_threshold(P.tocsr(), target_density=target_density)
-        SPS_new[np.abs(SPS_new) < thr] = 0.0
-        print('  constructing sparse update...')
-        dSPS = (csr_matrix(SPS_new) - SPS).tocoo()
-        dP = csr_matrix((dSPS.data, (inds[dSPS.row], inds[dSPS.col])), shape=P.shape)
         print('  updating...')
-        P += dP
+        dSPS = - XSPS.T @ B @ XSPS
+        P = add_submatrix(P, dSPS, where=(inds, inds), target_density=target_density)
         print(f'  max(abs(P)) = {np.max(np.abs(P))}')
 
     diag_indices = np.diag_indices(n_items)
@@ -404,7 +503,7 @@ def gen_submatrices(A, r_blanket=0.5, max_iter=None):
         i += 1
 
 
-def add_submatrix(A, dA, where=None, prune_sub=False, target_density=1.0, max_density=None):
+def add_submatrix(A, dA, where=None, target_density=1.0, max_density=None):
     """Add submatrix `sub` to `A` at indices `where = (rows, cols)`.
     Optionally prune the result down to density `target_density`
 
@@ -414,6 +513,9 @@ def add_submatrix(A, dA, where=None, prune_sub=False, target_density=1.0, max_de
     """
     if max_density is None:
         max_density = 3 * target_density
+    if dA.size > max_density * np.prod(A.shape):
+        thr = np.min(np.abs(A.data[np.abs(A.data) > 0]))
+        dA[np.abs(dA) < thr] = 0.0
     dA = coo_matrix(dA)
     if where is not None:
         rows, cols = where
@@ -424,7 +526,7 @@ def add_submatrix(A, dA, where=None, prune_sub=False, target_density=1.0, max_de
         A = prune_global(A, target_density=target_density, copy=False)
 
     return A
-    
+
 
 def drop_empty_cols(X):
 

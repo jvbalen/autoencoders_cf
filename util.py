@@ -84,6 +84,8 @@ def prune_rows(x, target_nnz=30):
     """
     if issparse(x):
         x = x.tocsr()
+    if x.shape[1] <= target_nnz:
+        return x
     target_density = target_nnz / x.shape[1]
     pruned_rows = [prune_global(row, target_density=target_density) for row in x]
 
