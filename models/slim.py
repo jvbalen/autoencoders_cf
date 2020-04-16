@@ -276,6 +276,37 @@ def block_slim(x, l2_reg=1.0, row_nnz=1000, target_density=0.01, r_blanket=0.5, 
 
 
 @gin.configurable
+def block_slim_light(x, l2_reg=1.0, row_nnz=1000, r_blanket=0.5, max_iter=None):
+    """Sparse but approximate 'block-wise' variant of the closed-form slim algorithm.
+    Both algorithms due to Steck.
+
+    NOTE: this particular modification attempts to keep memory footprint under O(N^3/2)
+    """
+    x = x.tocsc()
+    _, n_items = x.shape
+    B = csr_matrix((n_items, n_items))
+    blocks = csr_matrix((n_items, n_items))
+    for sub, weights in gen_submatrices_light(x, r_blanket=r_blanket, max_iter=max_iter, row_nnz=row_nnz):
+        print(f'  computing gramm for block of size {len(sub)}...')
+        G_sub = x[:, sub].T @ x
+        A_sub = prune_rows(G_sub, target_nnz=row_nnz)
+        print(f'  computing block weights...')
+        block = A_sub[:, sub].tocoo().T
+        block.data = weights[block.col]
+        B_sub = closed_form_slim_from_gramm(G_sub[:, sub], l2_reg=l2_reg)
+        B_sub = coo_matrix((B_sub[block.nonzero()], block.nonzero()))
+        B_sub.data = B_sub.data * weights[B_sub.col]
+        print(f'  adding block weights to B...')
+        B = add_submatrix(B, B_sub, where=(sub, sub))
+        blocks = add_submatrix(blocks, block, where=(sub, sub))
+
+    print(f'  scaling B by number of blocks summed...')
+    B[B.nonzero()] = B[B.nonzero()] / blocks[B.nonzero()]
+
+    return B
+
+
+@gin.configurable
 def block_slim_steck(train_data, alpha=0.75, threshold=50, rr=0.5, maxInColumn=1000, L2reg=1.0,
                      max_iter=None, sparse_gramm=True):
     """Sparse but approximate 'block-wise' variant of the closed-form slim algorithm.
@@ -491,6 +522,38 @@ def gen_submatrices(A, r_blanket=0.5, max_iter=None):
     i = 0
     while len(ind_list) and (max_iter is None or i < max_iter):
         _, sub, vals = sp.sparse.find(A[ind_list[0]])
+        if len(sub) < 2:
+            ind_list = ind_list[1:]
+            continue
+        thr = np.percentile(np.abs(vals), 100 * r_blanket)
+        markov_blanket = vals >= thr
+        yield sub, markov_blanket
+        drop = set(sub[markov_blanket])
+        ind_list = [i for i in ind_list if i not in drop]
+        print(f'  {len(ind_list)} remaining...')
+        i += 1
+
+
+def gen_submatrices_light(x, r_blanket=0.5, max_iter=None, row_nnz=200):
+    """Generates square submatrices, represented as sets of items,
+    plus binary weights indicating which items are in the present
+    submatrix' "markov blanket" as defined by Steck in [1]--
+    this will be 1 item if r_blanket = 0, or all if r_blanket = 1
+
+    Using a list comprehension rather than np.setdiff1d at the end
+    since set diff doesn't preserve order.
+
+    [1] Steck, Harald. "Markov Random Fields for Collaborative Filtering."
+    Advances in Neural Information Processing Systems. 2019.
+    """
+    sort_scores = x.getnnz(axis=0)
+    ind_list = np.argsort(-sort_scores)
+
+    i = 0
+    while len(ind_list) and (max_iter is None or i < max_iter):
+        ind = ind_list[0]
+        G_i = prune_rows(x[:, ind].T @ x, target_nnz=row_nnz)
+        _, sub, vals = sp.sparse.find(G_i)
         if len(sub) < 2:
             ind_list = ind_list[1:]
             continue

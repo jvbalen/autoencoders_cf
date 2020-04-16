@@ -1,11 +1,12 @@
 # sparse cholesky embeddings
 
-experiment.Recommender = @EmbeddingRecommender
+experiment.Recommender = @LinearRecommender
 # experiment.cap = 10000
 
-EmbeddingRecommender.save_embeddings = False
-EmbeddingRecommender.embedding_fn = @cholesky_embeddings
+LinearRecommender.save_weights = False
+LinearRecommender.weights_fn = @block_slim_light
 
-cholesky_embeddings.l2_reg = 200.0
-cholesky_embeddings.row_nnz = 120
-cholesky_embeddings.sort_by_nn = False
+block_slim_light.row_nnz = 200
+block_slim_light.l2_reg = 1.0
+block_slim_light.r_blanket = 0.5
+block_slim_light.max_iter = None
