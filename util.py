@@ -1,4 +1,6 @@
+
 import os
+import time
 import datetime
 
 import numpy as np
@@ -77,6 +79,32 @@ class Node(object):
     def __repr__(self):
 
         return f"{self.id}:[{','.join(str(ch) for ch in self.children)}]"
+
+
+class Clock(object):
+
+    def __init__(self, verbose=True, prefix='  ', suffix='...'):
+        self.t0 = time.perf_counter()
+        self.verbose = verbose
+        self.prefix = prefix
+        self.suffix = suffix
+
+    def tic(self):
+        self.t0 = time.perf_counter()
+
+    def toc(self):
+        elapsed = time.perf_counter() - self.t0
+        if self.verbose:
+            print(f'    elapsed: {elapsed:.3f}')
+
+    def print_message(self, message=None):
+        if self.verbose and message is not None:
+            print(self.prefix + message + self.suffix)
+
+    def interval(self, message=None):
+        self.toc()
+        self.print_message(message)
+        self.tic()
 
 
 def prune_global(x, target_density=0.005, copy=True):
@@ -235,18 +263,28 @@ def gen_batches(x, y=None, batch_size=100, shuffle=False, print_interval=1):
     """Generate batches from data arrays x and y
     """
     n_examples = x.shape[0]
-    n_batches = int(np.ceil(n_examples / batch_size))
-    inds = list(range(n_examples))
+    batch_inds = gen_batch_inds(n_examples, batch_size=batch_size, shuffle=shuffle, print_interval=print_interval)
+    for inds in batch_inds:
+        if y is None:
+            yield x[inds], None
+        else:
+            yield x[inds], y[inds]
+
+
+def gen_batch_inds(n_examples, batch_size=100, shuffle=False, print_interval=1):
+
+    inds = np.array(range(n_examples)).astype(int)
     if shuffle:
         np.random.shuffle(inds)
+    if batch_size is None:
+        yield inds
+        return
+    n_batches = int(np.ceil(n_examples / batch_size))
     for i_batch, start in enumerate(range(0, n_examples, batch_size)):
         end = min(start + batch_size, n_examples)
-        if i_batch % print_interval == 0:
+        if print_interval is not None and i_batch % print_interval == 0:
             print('  batch {}/{}...'.format(i_batch + 1, n_batches))
-        if y is None:
-            yield x[inds[start:end]], None
-        else:
-            yield x[inds[start:end]], y[inds[start:end]]
+        yield inds[start:end]
 
 
 def sparse_info(m):

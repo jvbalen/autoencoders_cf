@@ -10,7 +10,7 @@ import scipy as sp
 from scipy.sparse import csr_matrix, csc_matrix, coo_matrix, issparse, eye, vstack, tril, find, triu
 
 from models.base import BaseRecommender
-from util import Node, load_weights, prune_global, prune_rows, gen_batches
+from util import Clock, Node, load_weights, prune_global, prune_rows, gen_batches
 
 
 @gin.configurable
@@ -60,6 +60,83 @@ class LinearRecommender(BaseRecommender):
     def predict(self, x, y=None):
         """Predict scores"""
         y_pred = x @ self.weights
+
+        return y_pred, np.nan
+
+
+@gin.configurable
+class UserFactorRecommender(LinearRecommender):
+    """High-dimensional matrix factorization recommender
+    
+    The model learns user factors U and item factors B
+    such that U @ B ~ X
+    where:
+    U has the shape of a user-item matrix and is regularized
+    - by constraining its sparsity pattern to that of X
+    - with a l2 penalty ~ self.l2_reg
+    B is an item-item weights matrix, regularized
+    - by constraining its diagonal to zero (as in EASE^R)
+    - by constraining its sparsity pattern to that of X.T @ X
+    - with a l2 penalty ~ weights_fn.l2_reg
+    """
+    def __init__(self, log_dir, weights_fn=None, target_density=1.0, batch_size=100, save_weights=True,
+                 als_iterations=0, l2_reg=1.0):
+
+        self.l2_reg = l2_reg
+        self.als_iterations = als_iterations
+        super().__init__(log_dir=log_dir, weights_fn=weights_fn, target_density=target_density,
+                         batch_size=batch_size, save_weights=save_weights)
+
+    def train(self, x_train, y_train, x_val, y_val):
+
+        for i in range(self.als_iterations):
+            self.weights = self.weights_fn(x_train)
+            x_train = vstack(self.user_vector(x) for x, _ in
+                             gen_batches(x_train, batch_size=1, print_interval=100))
+
+        return super().train(x_train, y_train, x_val, y_val)
+
+    def user_vector(self, x):
+        """Predict a user vector from a row x of X
+
+        Procedure
+        - B is subset to retain only rows for which x is nonzero:
+            B' = B[x > 0]
+        - we then use B' to solve a variant of the lasso:
+            argmin_u |u' @ B' - x| + l2_reg |u'|
+          where u' is similarly a subset (of u, the desired user vector)
+            u' = u[:, x > 0]
+          it has closed-form solution:
+            u' = x @ B't @ (B' @ B't + reg @ Ihh)^-1
+          with
+            Ihh = I[x > 0, x > 0]
+        - the regularization term however is tweaked to keep u close to x rather than 0
+            argmin_u |u' @ B' - x| + l2_reg |u - x'|
+          with solution
+            x @ (B'.T + reg @ Ih) @ (B' @ B't + reg @ Ihh)^-1
+          where
+            Ih = I[x > 0]
+        """
+        n_items = x.shape[1]
+        ones, hist, _ = find(x)
+        b = self.weights[hist]
+        Ihh = eye(len(hist))
+        Ihn = eye(n_items).tocsr()[hist]
+        bbt = b @ b.T + Ihh * self.l2_reg
+        xbt = x @ (b + Ihn * self.l2_reg).T
+        if issparse(xbt):
+            bbt, xbt = bbt.toarray(), xbt.toarray()
+        else:
+            bbt, xbt = np.asarray(bbt), np.asarray(xbt)
+        u = xbt @ np.linalg.inv(bbt)
+
+        return csr_matrix((u.flatten(), (ones, hist)), shape=x.shape)
+
+    def predict(self, X, y=None):
+        """Predict scores"""
+        user_vectors = vstack(self.user_vector(x) for x, _ in
+                              gen_batches(X, batch_size=1, print_interval=None))
+        y_pred = user_vectors @ self.weights
 
         return y_pred, np.nan
 
@@ -143,23 +220,6 @@ class LinearRecommenderFromFile(BaseRecommender):
         return y_pred, np.nan
 
 
-class Clock(object):
-
-    def __init__(self):
-        self.t0 = time.perf_counter()
-
-    def tic(self):
-        self.t0 = time.perf_counter()
-
-    def toc(self):
-        elapsed = time.perf_counter() - self.t0
-        print(f'    elapsed: {elapsed}')
-
-    def print_interval(self):
-        self.toc()
-        self.tic()
-
-
 def closed_form_slim_from_gramm(gramm, l2_reg=500):
 
     if issparse(gramm):
@@ -210,16 +270,16 @@ def cholesky_embeddings(x, l2_reg=500, beta=2.0, row_nnz=None, sort_by_nn=False)
     G = x.T @ x
     diag_indices = np.diag_indices(G.shape[0])
     G[diag_indices] += l2_reg
-    clock.print_interval()
+    clock.interval()
     if sort_by_nn:
         print('sorting items by number of number of neighbors')
         items_by_nn = np.argsort(np.ravel(G.getnnz(axis=0)))  # nn = non-zero co-counts
         G = G[items_by_nn][:, items_by_nn]
-        clock.print_interval()
+        clock.interval()
     print('computing inverse P')
     P = np.linalg.inv(G.toarray())
     diag_P = np.diag(P)
-    clock.print_interval()
+    clock.interval()
 
     print('factorizing -P + beta * diag_P')
     A = -P
@@ -230,10 +290,10 @@ def cholesky_embeddings(x, l2_reg=500, beta=2.0, row_nnz=None, sort_by_nn=False)
         from sksparse.cholmod import cholesky
         A = csc_matrix((A[G.nonzero()], G.nonzero()), shape=G.shape)
         E = cholesky(A, ordering_method='natural').L()
-    clock.print_interval()
+    clock.interval()
     print('pruning factors')
     E = prune_rows(E, target_nnz=row_nnz)
-    clock.print_interval()
+    clock.interval()
 
     print('computing priors')
     prior = 1 / diag_P
@@ -326,7 +386,7 @@ def block_slim_light(x, l2_reg=1.0, cosine=True, row_nnz=1000, target_density=0.
     clock = Clock()
     print('computing sparsity pattern A...')
     A = batched_gramm(x, cosine=cosine, row_nnz=row_nnz, target_density=target_density, batch_size=1000, upper=upper)
-    clock.print_interval()
+    clock.interval()
 
     x = x.tocsc()
     _, n_items = x.shape
@@ -337,21 +397,21 @@ def block_slim_light(x, l2_reg=1.0, cosine=True, row_nnz=1000, target_density=0.
         clock.tic()
         x_sub = x[:, sub]
         A_sub = A[sub][:, sub]
-        clock.print_interval()
+        clock.interval()
         print(f'  computing gramm for block of size {len(sub)}...')
         G_sub = x_sub.T @ x_sub
-        clock.print_interval()
+        clock.interval()
         print(f'  computing block weights...')
         block = A_sub.tocoo().T
         block.data = weights[block.col]
         B_sub = block_fn(G_sub, l2_reg=l2_reg)
         B_sub = coo_matrix((B_sub[block.nonzero()], block.nonzero()))
         B_sub.data = B_sub.data * weights[B_sub.col]
-        clock.print_interval()
+        clock.interval()
         print(f'  adding block weights to B...')
         B = add_submatrix(B, B_sub, where=(sub, sub))
         blocks = add_submatrix(blocks, block, where=(sub, sub))
-        clock.print_interval()
+        clock.interval()
 
     print(f'  scaling B by number of blocks summed...')
     B[B.nonzero()] = B[B.nonzero()] / blocks[B.nonzero()]
@@ -362,7 +422,10 @@ def block_slim_light(x, l2_reg=1.0, cosine=True, row_nnz=1000, target_density=0.
 def batched_gramm(x, cosine=False, row_nnz=1000, target_density=0.01, batch_size=1000, upper=False):
 
     if cosine:
-        x = x.multiply(np.ravel(x.power(2).sum(axis=0))**-0.5)
+        sq_norms = np.ravel(x.power(2).sum(axis=0))
+        inv_norms = np.zeros_like(sq_norms)
+        inv_norms[sq_norms > 0] = sq_norms[sq_norms > 0]**-0.5
+        x = x.multiply(inv_norms)
     xt_batched = gen_batches(x.tocsc().T, batch_size=batch_size)
     A = csr_matrix((0, x.shape[1]))
     for x_sub, _ in xt_batched:
@@ -753,20 +816,19 @@ def gen_branches_from_tree(tree, max_len=1000, verbose=False):
 def add_submatrix(A, dA, where=None, target_density=1.0, max_density=None):
     """Add submatrix `sub` to `A` at indices `where = (rows, cols)`.
     Optionally prune the result down to density `target_density`
-
-    NOTE: do not use with target_density < 1.0 when summing
-    matrices before normalizing the sum by the number of
-    matrices summed -- pruning won't be correct
     """
     if max_density is None:
         max_density = 3 * target_density
     if dA.size > max_density * np.prod(A.shape):
         thr = np.min(np.abs(A.data[np.abs(A.data) > 0]))
         dA[np.abs(dA) < thr] = 0.0
-    dA = coo_matrix(dA)
     if where is not None:
+        dA = coo_matrix(dA)
         rows, cols = where
-        dA = csr_matrix((dA.data, (rows[dA.row], cols[dA.col])), shape=A.shape)
+        rows = dA.row if rows is None else rows[dA.row]
+        cols = dA.col if cols is None else cols[dA.col]
+        dA = csr_matrix((dA.data, (rows, cols)), shape=A.shape)
+    dA.eliminate_zeros()
     A += dA
     if A.nnz > max_density * np.prod(A.shape):
         print(f'  density > max_density: pruning result')

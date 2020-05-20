@@ -1,0 +1,16 @@
+# dense logistic matrix factorization
+
+experiment.Recommender = @LogisticMFRecommender
+# experiment.cap = 10000
+
+LogisticMFRecommender.latent_dim = 100
+LogisticMFRecommender.n_epochs = 30
+LogisticMFRecommender.epoch_n_val = 1000
+LogisticMFRecommender.save_weights = False
+
+logistic_mf.lr_u = 3e-4
+logistic_mf.lr_v = 3e-4
+logistic_mf.l2_reg = 0.01
+logistic_mf.alpha = 0.0
+logistic_mf.batch_size = 1000
+logistic_mf.verbose = False

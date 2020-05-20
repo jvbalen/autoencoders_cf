@@ -48,6 +48,7 @@ class BaseRecommender(object):
         metrics['prediction_time'] = prediction_time
         if other_metrics:
             metrics.update(other_metrics)
-        self.logger.log_metrics(metrics, config=gin.operative_config_str())
+        if self.logger is not None:
+            self.logger.log_metrics(metrics, config=gin.operative_config_str())
 
         return metrics
