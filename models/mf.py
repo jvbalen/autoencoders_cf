@@ -5,13 +5,98 @@ from warnings import warn
 import gin
 import numpy as np
 from scipy.special import expit
+from scipy.sparse import csr_matrix, vstack, issparse, eye, find
 
 from models.base import BaseRecommender
-from models.slim import batched_gramm, closed_form_slim, add_submatrix
-from util import Clock, gen_batch_inds, prune_global, prune_rows
+from models.slim import LinearRecommender, batched_gramm, closed_form_slim, add_submatrix
+from util import Clock, gen_batches, gen_batch_inds, prune_global, prune_rows
 from metric import binary_crossentropy_from_logits
 
 
+@gin.configurable
+class UserFactorRecommender(LinearRecommender):
+    """High-dimensional matrix factorization recommender
+    
+    The model learns user factors U and item factors B
+    such that U @ B ~ X
+    where:
+    U has the shape of a user-item matrix and is regularized
+    - by constraining its sparsity pattern to that of X
+    - with a l2 penalty ~ self.l2_reg
+    B is an item-item weights matrix, regularized
+    - by constraining its diagonal to zero
+    - by constraining its sparsity pattern to that of X.T @ X
+    - with a l2 penalty ~ weights_fn.l2_reg
+    
+    This model only does one iteration of computing the user and item factors,
+    concretely, it uses the weights of a trained EASE^R model for B,
+    and only then compute the user factors.
+    For a model that trains the user factor and item factors jointly,
+    see LogisticMFRecommender.
+    """
+    def __init__(self, log_dir, weights_fn=None, target_density=1.0, batch_size=100, save_weights=True,
+                 als_iterations=0, l2_reg=1.0):
+
+        self.l2_reg = l2_reg
+        self.als_iterations = als_iterations
+        self.weights_fn = closed_form_slim if weights_fn is None else weights_fn
+        super().__init__(log_dir=log_dir, weights_fn=weights_fn, target_density=target_density,
+                         batch_size=batch_size, save_weights=save_weights)
+
+    def train(self, x_train, y_train, x_val, y_val):
+
+        for i in range(self.als_iterations):
+            self.weights = self.weights_fn(x_train)
+            x_train = vstack(self.user_vector(x) for x, _ in
+                             gen_batches(x_train, batch_size=1, print_interval=100))
+
+        return super().train(x_train, y_train, x_val, y_val)
+
+    def user_vector(self, x):
+        """Predict a user vector from a row x of X
+
+        Procedure
+        - B is subset to retain only rows for which x is nonzero:
+            B' = B[x > 0]
+        - we then use B' to solve a variant of the lasso:
+            argmin_u |u' @ B' - x| + l2_reg |u'|
+          where u' is similarly a subset (of u, the desired user vector)
+            u' = u[:, x > 0]
+          it has closed-form solution:
+            u' = x @ B't @ (B' @ B't + reg @ Ihh)^-1
+          with
+            Ihh = I[x > 0, x > 0]
+        - the regularization term however is tweaked to keep u close to x rather than 0
+            argmin_u |u' @ B' - x| + l2_reg |u - x'|
+          with solution
+            x @ (B'.T + reg @ Ih) @ (B' @ B't + reg @ Ihh)^-1
+          where
+            Ih = I[x > 0]
+        """
+        n_items = x.shape[1]
+        ones, hist, _ = find(x)
+        b = self.weights[hist]
+        Ihh = eye(len(hist))
+        Ihn = eye(n_items).tocsr()[hist]
+        bbt = b @ b.T + Ihh * self.l2_reg
+        xbt = x @ (b + Ihn * self.l2_reg).T
+        if issparse(xbt):
+            bbt, xbt = bbt.toarray(), xbt.toarray()
+        else:
+            bbt, xbt = np.asarray(bbt), np.asarray(xbt)
+        u = xbt @ np.linalg.inv(bbt)
+
+        return csr_matrix((u.flatten(), (ones, hist)), shape=x.shape)
+
+    def predict(self, X, y=None):
+        """Predict scores"""
+        user_vectors = vstack(self.user_vector(x) for x, _ in
+                              gen_batches(X, batch_size=1, print_interval=None))
+        y_pred = user_vectors @ self.weights
+
+        return y_pred, np.nan
+
+ 
 @gin.configurable
 class LogisticMFRecommender(BaseRecommender):
 
