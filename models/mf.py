@@ -1,4 +1,21 @@
+"""Full-rank matrix factorization. Experimental
 
+UserFactorRecommender is a LinearRecommender with SLIM/EASE^R weights,
+except it reweights the user histories X such that |X - XB| -> 0
+(though preserving the sparsity of pattern in X) before predicting Y = XB.
+In early experiments however this did not lead to any improvements in prediction
+accuracy (yet)
+
+LogisticMFRecommender is a matrix factorization recommender, it models:
+    X ~ logistic(U @ V)
+    U.shape = (n_users, latent_dim)
+    V.shape = (latent_dim, n_items)
+It is optimized with vanilla SGD in numpy/scipy using sparse matrices.
+It also supports 'full-rank' factors (latent_dim = n_items). The rrivial solution
+    X = X @ I
+is avoided by applying a zero-diagonal constraint to V. U is also constraint to
+match the sparsity pattern of X
+"""
 import time
 from warnings import warn
 
@@ -16,7 +33,7 @@ from metric import binary_crossentropy_from_logits
 @gin.configurable
 class UserFactorRecommender(LinearRecommender):
     """High-dimensional matrix factorization recommender
-    
+
     The model learns user factors U and item factors B
     such that U @ B ~ X
     where:
@@ -27,7 +44,7 @@ class UserFactorRecommender(LinearRecommender):
     - by constraining its diagonal to zero
     - by constraining its sparsity pattern to that of X.T @ X
     - with a l2 penalty ~ weights_fn.l2_reg
-    
+
     This model only does one iteration of computing the user and item factors,
     concretely, it uses the weights of a trained EASE^R model for B,
     and only then compute the user factors.
@@ -96,7 +113,7 @@ class UserFactorRecommender(LinearRecommender):
 
         return y_pred, np.nan
 
- 
+
 @gin.configurable
 class LogisticMFRecommender(BaseRecommender):
 
@@ -290,7 +307,7 @@ def logistic_mf(X, U=None, V=None, l2_reg=1.0, alpha=10.0, lr_u=0.001, lr_v=0.00
             clock.interval('computing loss')
             bce = binary_crossentropy_from_logits(u @ V.T, y)
             print(f'    batch BCE = {np.mean(bce):.3f}')
-        
+
         dldz = y_pred + alpha * y_pred * x - y - alpha * x
         if lr_u > 0:
             clock.interval('updating U')
