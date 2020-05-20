@@ -43,6 +43,42 @@ class Logger(object):
             print('`coefs` is None: nothing to save')
 
 
+class Node(object):
+
+    def __init__(self, id, children=None):
+
+        self.id = id
+        if children is None:
+            self.children = []
+        else:
+            self.children = children
+
+    def flatten(self):
+
+        all_nodes = [self.id]
+        for child in self.children:
+            all_nodes.extend(child.flatten())
+
+        return all_nodes
+
+    @property
+    def n_children(self):
+        return len(self.children)
+
+    @property
+    def size(self):
+
+        return len(self.flatten())
+
+    def copy(self):
+
+        return Node(self.id, self.children)
+
+    def __repr__(self):
+
+        return f"{self.id}:[{','.join(str(ch) for ch in self.children)}]"
+
+
 def prune_global(x, target_density=0.005, copy=True):
     """Prune a 2d np.array or sp.sparse matrix by setting elements
     with low absolute value to 0.0 and return as a sp.sparse.csr_matrix.
@@ -60,14 +96,14 @@ def prune_global(x, target_density=0.005, copy=True):
             return x_sp
         thr = get_pruning_threshold(x, target_density=target_density)
         try:
-            x_sp.data[np.abs(x_sp.data) < thr] = 0.0
+            x_sp.data[np.abs(x_sp.data) <= thr] = 0.0
         except AttributeError:
             x_sp = x_sp.tocsr()
-            x_sp.data[np.abs(x_sp.data) < thr] = 0.0
+            x_sp.data[np.abs(x_sp.data) <= thr] = 0.0
     else:
         x = x.copy()
         thr = get_pruning_threshold(x, target_density=target_density)
-        x[np.abs(x) < thr] = 0.0
+        x[np.abs(x) <= thr] = 0.0
         x_sp = csr_matrix(x)
     x_sp.eliminate_zeros()
 

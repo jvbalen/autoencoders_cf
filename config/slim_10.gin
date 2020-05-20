@@ -1,4 +1,4 @@
-# sparse cholesky embeddings
+# sparse SLIM with submatrices drawn from a tree
 
 experiment.Recommender = @LinearRecommender
 # experiment.cap = 10000
@@ -6,9 +6,7 @@ experiment.Recommender = @LinearRecommender
 LinearRecommender.save_weights = False
 LinearRecommender.weights_fn = @block_slim_light
 
-block_slim_light.row_nnz = 1000
 block_slim_light.l2_reg = 1.0
-block_slim_light.r_blanket = 0.5
-block_slim_light.decay = 1.0
 block_slim_light.cosine = True
-block_slim_light.max_iter = None
+block_slim_light.target_density = None
+block_slim_light.row_nnz = 200

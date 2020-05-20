@@ -2,14 +2,15 @@
 import time
 from copy import deepcopy
 from warnings import warn
+from collections import defaultdict
 
 import gin
 import numpy as np
 import scipy as sp
-from scipy.sparse import linalg, csr_matrix, csc_matrix, coo_matrix, issparse, eye
+from scipy.sparse import csr_matrix, csc_matrix, coo_matrix, issparse, eye, vstack, tril, find, triu
 
 from models.base import BaseRecommender
-from util import load_weights, prune_global, prune_rows, gen_batches
+from util import Node, load_weights, prune_global, prune_rows, gen_batches
 
 
 @gin.configurable
@@ -172,6 +173,20 @@ def closed_form_slim_from_gramm(gramm, l2_reg=500):
     return weights
 
 
+def cholesky_embeddings_from_gramm(gramm, l2_reg=1.0):
+
+    if issparse(gramm):
+        gramm = gramm.toarray()
+    diag_indices = np.diag_indices(gramm.shape[0])
+    gramm[diag_indices] += l2_reg
+    P = np.linalg.inv(gramm)
+    A = -P
+    A[np.diag_indices_from(A)] += 2 * np.diag(P)  # alt: *= -1
+    E = sp.linalg.cholesky(A, lower=True)
+
+    return E
+
+
 @gin.configurable
 def closed_form_slim(x, l2_reg=500):
 
@@ -233,6 +248,25 @@ def cholesky_embeddings(x, l2_reg=500, beta=2.0, row_nnz=None, sort_by_nn=False)
 
 
 @gin.configurable
+def block_cholesky_embeddings(x, l2_reg=1.0, cosine=True, row_nnz=1000, target_density=0.01):
+    """`Block-wise` approximation of the `cholesky_embeddings`.
+    Should also be relatively memory-efficient.
+
+    NOTE: unless the inds returned by gen_submatrices are ordered by something meaningful,
+    the resulting embeddings won't be triangular per any particular permutation.
+    The sparsity will also not be proportional to the item's rank or degree as with `cholesky_embeddings`
+    unless we're more clever about the batched pruning we apply to A in `block_slim_light`.
+    """
+    L = block_slim_light(x, l2_reg=l2_reg, cosine=cosine, row_nnz=row_nnz, target_density=target_density,
+                         block_fn=cholesky_embeddings_from_gramm, upper=True)
+    p = np.zeros(L.shape[0])
+    sq_norms = np.ravel(L.power(2).sum(axis=1))
+    p[sq_norms > 0] = 1 / sq_norms[sq_norms > 0]
+
+    return L, p
+
+
+@gin.configurable
 def block_slim(x, l2_reg=1.0, row_nnz=1000, target_density=0.01, r_blanket=0.5, max_iter=None):
     """Sparse but approximate 'block-wise' variant of the closed-form slim algorithm.
     Both algorithms due to Steck.
@@ -276,14 +310,83 @@ def block_slim(x, l2_reg=1.0, row_nnz=1000, target_density=0.01, r_blanket=0.5, 
 
 
 @gin.configurable
+def block_slim_light(x, l2_reg=1.0, cosine=True, row_nnz=1000, target_density=0.01,
+                     submatrix_generator=None, block_fn=None, upper=False):
+    """Sparse but approximate 'block-wise' variant of the closed-form slim algorithm.
+    Both algorithms due to Steck.
+
+    NOTE: this particular modification is slower but
+    memory efficient: it has a footprint of O(N^3/2).
+    """
+    if submatrix_generator is None:
+        submatrix_generator = gen_submatrices
+    if block_fn is None:
+        block_fn = closed_form_slim_from_gramm
+
+    clock = Clock()
+    print('computing sparsity pattern A...')
+    A = batched_gramm(x, cosine=cosine, row_nnz=row_nnz, target_density=target_density, batch_size=1000, upper=upper)
+    clock.print_interval()
+
+    x = x.tocsc()
+    _, n_items = x.shape
+    B = csr_matrix((n_items, n_items))
+    blocks = csr_matrix((n_items, n_items))
+    for sub, weights in submatrix_generator(A):
+        print(f'  subsetting x')
+        clock.tic()
+        x_sub = x[:, sub]
+        A_sub = A[sub][:, sub]
+        clock.print_interval()
+        print(f'  computing gramm for block of size {len(sub)}...')
+        G_sub = x_sub.T @ x_sub
+        clock.print_interval()
+        print(f'  computing block weights...')
+        block = A_sub.tocoo().T
+        block.data = weights[block.col]
+        B_sub = block_fn(G_sub, l2_reg=l2_reg)
+        B_sub = coo_matrix((B_sub[block.nonzero()], block.nonzero()))
+        B_sub.data = B_sub.data * weights[B_sub.col]
+        clock.print_interval()
+        print(f'  adding block weights to B...')
+        B = add_submatrix(B, B_sub, where=(sub, sub))
+        blocks = add_submatrix(blocks, block, where=(sub, sub))
+        clock.print_interval()
+
+    print(f'  scaling B by number of blocks summed...')
+    B[B.nonzero()] = B[B.nonzero()] / blocks[B.nonzero()]
+
+    return B
+
+
+def batched_gramm(x, cosine=False, row_nnz=1000, target_density=0.01, batch_size=1000, upper=False):
+
+    if cosine:
+        x = x.multiply(np.ravel(x.power(2).sum(axis=0))**-0.5)
+    xt_batched = gen_batches(x.tocsc().T, batch_size=batch_size)
+    A = csr_matrix((0, x.shape[1]))
+    for x_sub, _ in xt_batched:
+        A = vstack([A, x_sub @ x])
+        if upper:
+            A = triu(A)
+        if row_nnz is not None:
+            A = prune_rows(A, target_nnz=row_nnz)
+        if target_density is not None:
+            A = prune_global(A, target_density=target_density)
+
+    return A
+
+
+@gin.configurable
 def block_slim_steck(train_data, alpha=0.75, threshold=50, rr=0.5, maxInColumn=1000, L2reg=1.0,
                      max_iter=None, sparse_gramm=True):
     """Sparse but approximate 'block-wise' variant of the closed-form slim algorithm.
     Both algorithms due to Steck.
-    This implementation is a close adaptation of Steck's code released with [1].
+    This implementation is a close adaptation of the code [1] released with [2].
     It "implements section 3.2 in the paper".
 
-    [1] Steck, Harald. "Markov Random Fields for Collaborative Filtering."
+    [1] https://github.com/hasteck/MRF_NeurIPS_2019
+    [2] Steck, Harald. "Markov Random Fields for Collaborative Filtering."
     Advances in Neural Information Processing Systems. 2019.
     """
     print("computing gramm matrix XtX and sparsity pattern AA")
@@ -386,8 +489,8 @@ def block_slim_steck(train_data, alpha=0.75, threshold=50, rr=0.5, maxInColumn=1
     BBsum = csc_matrix((BBlist_val, (BBlist_ix1, BBlist_ix2)), shape=XtX.shape, dtype=np.float32)
     BBcnt = csc_matrix((np.ones(len(BBlist_ix1), dtype=np.float32), (BBlist_ix1, BBlist_ix2)),
                        shape=XtX.shape, dtype=np.float32)
-    b_div = sp.sparse.find(BBcnt)[2]
-    b_3 = sp.sparse.find(BBsum)
+    b_div = find(BBcnt)[2]
+    b_3 = find(BBsum)
     BBavg = csc_matrix((b_3[2] / b_div, (b_3[0], b_3[1])), shape=XtX.shape, dtype=np.float32)
     BBavg[ii_diag] = 0.0
     myClock.toc()
@@ -473,6 +576,7 @@ def naive_incremental_slim(x, batch_size=50, l2_reg=10, target_density=1.0):
     return B
 
 
+@gin.configurable
 def gen_submatrices(A, r_blanket=0.5, max_iter=None):
     """Generates square submatrices, represented as sets of items,
     plus binary weights indicating which items are in the present
@@ -486,11 +590,13 @@ def gen_submatrices(A, r_blanket=0.5, max_iter=None):
     Advances in Neural Information Processing Systems. 2019.
     """
     sort_scores = A.getnnz(axis=1) + 0.5 * A.diagonal() / A.diagonal().max()
-    ind_list = np.argsort(-sort_scores)
+    ind_list = np.argsort(-sort_scores).tolist()
 
     i = 0
-    while len(ind_list) and (max_iter is None or i < max_iter):
-        _, sub, vals = sp.sparse.find(A[ind_list[0]])
+    A = A.astype(np.float32)
+    while ind_list and (max_iter is None or i < max_iter):
+        ind = ind_list[0]
+        _, sub, vals = find(A[ind])
         if len(sub) < 2:
             ind_list = ind_list[1:]
             continue
@@ -501,6 +607,147 @@ def gen_submatrices(A, r_blanket=0.5, max_iter=None):
         ind_list = [i for i in ind_list if i not in drop]
         print(f'  {len(ind_list)} remaining...')
         i += 1
+
+
+@gin.configurable
+def gen_branches(G, max_size=1000, sort_by_nn=False, ignore_weight=False):
+    """Convert gramm matrix to tree and generate branches,
+    always including root and least one leaf, each as large as possible
+    but shorter than max_len + 1
+
+    TODO: figure out why sorting (and unsorting) by sort_scores lowers performance
+    """
+    if sort_by_nn:
+        sort_scores = G.getnnz(axis=1) + 0.5 * G.diagonal() / G.diagonal().max()
+        ind_list = np.argsort(-sort_scores)
+        G[ind_list][:, ind_list]
+    tree = gramm_tree(G)
+    for i, (branch, w) in enumerate(gen_branches_from_tree(tree, max_len=max_size)):
+        print(f'submatrix {i+1}...')
+        if ignore_weight:
+            w = np.ones_like(w)
+        if sort_by_nn:
+            yield ind_list[np.array(branch)], w
+        else:
+            yield np.array(branch), w
+
+
+@gin.configurable
+def gen_random_walks(G, n_walks=100, max_size=1000, n_neighbors=100, temperature=0.1, weight_thr=1.0,
+                     alpha=1.0, block_complexity=1.0):
+    """Given a gram matrix, use random walks to draw `n_walks` sets of closely correlated items.
+    """
+    def worth_adding(a, b, exp=2):
+        cost_of_adding = (a + b > 0).sum() ** exp
+        cost_of_not_adding = (a > 0).sum() ** exp + (b > 0).sum() ** exp
+        return cost_of_adding <= cost_of_not_adding
+
+    n_items, _ = G.shape
+    G_nnz = G.getnnz(axis=0)
+    tot_weights = np.zeros(n_items)
+    for i in range(n_walks):
+        print(f'walk {i+1} of {n_walks}')
+        if np.all(tot_weights >= weight_thr):
+            break
+
+        step_candidates = np.arange(n_items)
+        p_step = G_nnz / np.mean(G_nnz)  # p ~ 1 to avoid over/underflow w low temp
+        if np.any(tot_weights[step_candidates] == 0):
+            p_step = p_step * (tot_weights[step_candidates] == 0)  # start on an item we did not visit before
+        walk, sub_weights = set(), np.zeros(n_items)
+        while True:
+            p_step = p_step ** (1 / temperature)  # boldly go
+            p_step = p_step * (tot_weights[step_candidates] < weight_thr)  # where we did not go often enough
+            p_step = p_step * np.array([n not in walk for n in step_candidates])  # and didn't go yet on this walk
+            if np.all(p_step == 0):
+                print('# end of walk: no more places to go')
+                break
+            position = np.random.choice(step_candidates, p=p_step/p_step.sum())
+
+            neighbors = prune_rows(G[position], target_nnz=n_neighbors + 1)
+            sims = (neighbors.toarray().flatten() / neighbors.max())
+            sims[sims > 0] = sims[sims > 0] ** alpha
+            if np.sum((sub_weights + sims) > 0) > max_size:
+                print('# end of walk: sub reached max_size')
+                break
+            if not worth_adding(sub_weights, sims, exp=block_complexity):
+                print('# end of walk: not worth adding more neighbors')
+                break
+            sub_weights += sims
+            tot_weights += sims
+            walk.add(position)
+            _, step_candidates, p_step = find(neighbors)
+
+        _, sub, weights = find(sub_weights)
+        print(f'# len walk = {len(walk)}')
+        print(f'# num unvisited: {np.sum(tot_weights == 0)}')
+        print(f'# num not visited enough: {np.sum(tot_weights < weight_thr)}')
+        yield sub, weights
+
+
+def gramm_tree(G):
+
+    parents = np.ravel(tril(G, k=-1).argmax(axis=1))
+    tree_dict = defaultdict(list)
+    for i in range(len(parents)-1, 0, -1):
+        parent = parents[i]
+        children = tree_dict[i]
+        tree_dict[parent] = [Node(i, children)] + tree_dict[parent]
+        del tree_dict[i]
+    tree_list = [Node(id_, children) for id_, children in tree_dict.items()]
+    tree = tree_list[0] if len(tree_list) == 1 else Node(-1, tree_list)
+
+    return tree
+
+
+def gen_branches_from_tree(tree, max_len=1000, verbose=False):
+    
+    """Generate branches, always including root and least one leaf,
+    each as large as possible, but shorter than max_len + 1,
+    until all leafs have been returned once.
+    Leaves deeper than max_len will not be returned.
+    TODO: verify all other branches do get returned in this case...
+
+    This is not a definite implementation, though it seems to the the job
+    for at least one toy example.
+
+    Current algorithm will, given a node,
+      get the root-to-leaf branch associated with the node, i.e.:
+          ancestors + node + descendants
+      if it's not bigger than max_len:
+          yield branch, delete node and go to parent
+      if it is, go into the largest subtree
+      if it has no (more) children, go to parent
+    """
+    node = tree
+    visited = []
+    while True:
+        if verbose:
+            print(f'node.id = {node.id}')
+            print(f'len(visited), node.size = {len(visited)}, {node.size}')
+        if node.size + len(visited) <= max_len:
+            branch = [node.id for node in visited] + node.flatten()
+            w = np.ones(len(branch))
+            w[:len(visited)] = 0
+            if verbose:
+                print(f'-> yielding branch of length {len(branch)}...')
+            yield branch, w
+            if len(visited):
+                if verbose:
+                    print(f'-> deleting node and moving back up...')
+                visited[-1].children = [ch for ch in visited[-1].children if not ch.id == node.id]
+                node = visited.pop(-1)
+            else:
+                if verbose:
+                    print(f'-> no more nodes')
+                break
+        else:
+            subtree_sizes = [subtree.size for subtree in node.children]
+            largest = np.argmax(subtree_sizes)
+            visited.append(node.copy())
+            node = node.children[largest]
+            if verbose:
+                print(f'-> subtrees too big, moving into subtree {largest+1} of {node.n_children}')
 
 
 def add_submatrix(A, dA, where=None, target_density=1.0, max_density=None):

@@ -1,0 +1,20 @@
+# sparse SLIM with submatrices drawn from graph random walks
+
+experiment.Recommender = @LinearRecommender
+# experiment.cap = 10000
+
+LinearRecommender.save_weights = False
+LinearRecommender.weights_fn = @block_slim_light
+
+block_slim_light.l2_reg = 1.0
+block_slim_light.cosine = True
+block_slim_light.row_nnz = 1000
+block_slim_light.target_density = 0.003
+block_slim_light.submatrix_generator = @gen_random_walks
+
+gen_random_walks.block_complexity = 1.0
+gen_random_walks.n_walks = 4000
+gen_random_walks.max_size = 1000
+gen_random_walks.n_neighbors = 1000
+gen_random_walks.temperature = 0.1
+gen_random_walks.alpha = 2.0
