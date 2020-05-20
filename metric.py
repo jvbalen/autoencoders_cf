@@ -45,8 +45,9 @@ def binary_crossentropy_from_logits(x_pred, x_true):
     x_pred = x_pred.toarray() if issparse(x_pred) else np.array(x_pred)
     x_true = x_true.toarray() if issparse(x_true) else np.array(x_true)
 
-    log_sigmoid_abs = np.log(1 + np.exp(-np.abs(x_pred)))
-    bce = np.max(x_pred, 0) - x_pred * x_true + log_sigmoid_abs
+    # bce = x_pred - x_pred * x_true + np.log(1 + np.exp(-x_pred))                   # stable when x > 0?
+    # bce = - x_pred * x_true + np.log(1 + np.exp(x_pred))                           # stable when x < 0?
+    bce = np.maximum(x_pred, 0) - x_pred * x_true + np.log(1 + np.exp(-np.abs(x_pred)))   # best of both?
 
     return bce
 

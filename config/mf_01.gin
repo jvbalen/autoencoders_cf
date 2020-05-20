@@ -1,0 +1,17 @@
+# sparse logistic matrix factorization
+
+experiment.Recommender = @LogisticMFRecommender
+experiment.cap = 10000
+
+LogisticMFRecommender.latent_dim = None  # sparse lmf
+LogisticMFRecommender.n_epochs = 30
+LogisticMFRecommender.epoch_n_val = 1000
+LogisticMFRecommender.save_weights = False
+
+sparse_logistic_mf.lr_u = 0.0  # U = X
+sparse_logistic_mf.lr_v = 3e-4
+sparse_logistic_mf.l2_reg = 1.0
+sparse_logistic_mf.alpha_w = 0.0
+sparse_logistic_mf.alpha_s = 0.05
+sparse_logistic_mf.batch_size = 100
+sparse_logistic_mf.verbose = False
