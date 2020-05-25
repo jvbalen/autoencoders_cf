@@ -67,7 +67,7 @@ class LinearRecommender(BaseRecommender):
 @gin.configurable
 class EmbeddingRecommender(BaseRecommender):
 
-    def __init__(self, log_dir, embedding_fn=None, item_nnz=100, batch_size=100, save_embeddings=True):
+    def __init__(self, log_dir, embedding_fn=None, item_nnz=None, batch_size=100, save_embeddings=True):
         """Embedding recommender.
         """
         self.embedding_fn = embedding_fn
