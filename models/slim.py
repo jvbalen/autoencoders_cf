@@ -195,7 +195,7 @@ def cholesky_embeddings(x, l2_reg=500, beta=2.0, row_nnz=None, sort_by_nn=False)
     G[diag_indices] += l2_reg
     clock.interval()
     if sort_by_nn:
-        print('sorting items by number of number of neighbors')
+        print('sorting items by number of neighbors')
         items_by_nn = np.argsort(np.ravel(G.getnnz(axis=0)))  # nn = non-zero co-counts
         G = G[items_by_nn][:, items_by_nn]
         clock.interval()
