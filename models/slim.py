@@ -342,25 +342,39 @@ def block_slim_light(x, l2_reg=1.0, cosine=True, row_nnz=1000, target_density=0.
     return B
 
 
-def batched_gramm(x, cosine=False, row_nnz=1000, target_density=0.01, batch_size=1000, upper=False):
+def batched_gramm(x, batch_size=1000, cosine=False, row_nnz=1000, target_density=0.01, upper=False):
+    """Compute X.T @ X, in batches. Returns a sparse matrix.
 
-    if cosine:
-        sq_norms = np.ravel(x.power(2).sum(axis=0))
-        inv_norms = np.zeros_like(sq_norms)
-        inv_norms[sq_norms > 0] = sq_norms[sq_norms > 0]**-0.5
-        x = x.multiply(inv_norms)
-    xt_batched = gen_batches(x.tocsc().T, batch_size=batch_size)
-    A = csr_matrix((0, x.shape[1]))
-    for x_sub, _ in xt_batched:
-        A = vstack([A, x_sub @ x])
+    Args:
+    - X (scipy.sparse matrix)
+    - batch_size (int): batch size. Use None to compute in one pass
+    - cosine (bool): normalize columns of X first so that X.T @ X are cosine similarities
+    - row_nnz (int): if not None, prune each row of the result down to the largest (abs) `row_nnz` non-zeros
+    - target_density (float), prune the resulting matrix down further to at most this density
+    - upper (bool): retain only upper-diagonal nonzeros
+    """
+    def _pruned(A):
         if upper:
             A = triu(A)
         if row_nnz is not None:
             A = prune_rows(A, target_nnz=row_nnz)
         if target_density is not None:
             A = prune_global(A, target_density=target_density)
+        return A
 
-    return A
+    if cosine:
+        sq_norms = np.ravel(x.power(2).sum(axis=0))
+        inv_norms = np.zeros_like(sq_norms)
+        inv_norms[sq_norms > 0] = sq_norms[sq_norms > 0]**-0.5
+        x = x.multiply(inv_norms)
+
+    xt_batched = gen_batches(x.tocsc().T, batch_size=batch_size)
+    gramm = csr_matrix((0, x.shape[1]))
+    for x_sub, _ in xt_batched:
+        gramm = vstack([gramm, x_sub @ x])
+        gramm = _pruned(gramm)
+
+    return gramm
 
 
 @gin.configurable
