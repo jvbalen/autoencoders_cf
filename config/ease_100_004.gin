@@ -3,4 +3,5 @@
 experiment.Recommender = @LinearRecommender
 LinearRecommender.save_weights = False
 LinearRecommender.weights_fn = @closed_form_slim
-closed_form_slim.l2_reg = 280.0
+LinearRecommender.target_density = 0.004
+closed_form_slim.l2_reg = 100.0
