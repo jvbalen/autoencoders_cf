@@ -11,7 +11,7 @@ EmbeddingRecommender.save_embeddings = False
 
 # Parameters for cholesky_embeddings:
 # ==============================================================================
-cholesky_embeddings.beta = 2.0
+cholesky_embeddings.beta = 5.0
 cholesky_embeddings.l2_reg = 70.0
 cholesky_embeddings.row_nnz = 140
 cholesky_embeddings.sort_by_nn = False
