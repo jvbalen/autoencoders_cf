@@ -107,8 +107,7 @@ class UserFactorRecommender(LinearRecommender):
 
     def predict(self, X, y=None):
         """Predict scores"""
-        user_vectors = vstack(self.user_vector(x) for x, _ in
-                              gen_batches(X, batch_size=1, print_interval=None))
+        user_vectors = vstack(self.user_vector(x) for x, _ in gen_batches(X, batch_size=1))
         y_pred = user_vectors @ self.weights
 
         return y_pred, np.nan

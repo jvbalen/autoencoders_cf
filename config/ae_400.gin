@@ -1,0 +1,17 @@
+# 2-layer AE with NLL loss, bias, dropout and normalization
+
+experiment.Recommender = @TFRecommender
+# experiment.cap = 10000
+
+TFRecommender.batch_size = 500
+TFRecommender.n_epochs = 100
+
+AutoEncoder.n_layers = 2
+AutoEncoder.latent_dim = 400
+AutoEncoder.tanh = True
+AutoEncoder.loss = "nll"
+AutoEncoder.use_biases = True
+AutoEncoder.normalize_inputs = True
+AutoEncoder.keep_prob = 0.5
+AutoEncoder.lam = 2e-5
+AutoEncoder.lr = 1e-3
