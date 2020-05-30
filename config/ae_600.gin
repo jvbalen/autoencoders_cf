@@ -4,7 +4,7 @@ experiment.Recommender = @TFRecommender
 # experiment.cap = 10000
 
 TFRecommender.batch_size = 500
-TFRecommender.n_epochs = 100
+TFRecommender.n_epochs = 50
 
 AutoEncoder.n_layers = 2
 AutoEncoder.latent_dim = 600
