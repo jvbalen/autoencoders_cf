@@ -67,11 +67,11 @@ class TFRecommender(BaseRecommender):
         """
         x, y = self.prepare_batch(x, y)
         if y is not None:
-            feed_dict = {self.model.input_ph: x, self.model.label_ph: y, self.keep_prob: 1.0}
+            feed_dict = {self.model.input_ph: x, self.model.label_ph: y, self.model.keep_prob_ph: 1.0}
             y_pred, loss = self.sess.run([self.model.logits, self.model.loss],
                                          feed_dict=feed_dict)
         else:
-            feed_dict = {self.model.input_ph: x, self.keep_prob: 1.0}
+            feed_dict = {self.model.input_ph: x, self.model.keep_prob_ph: 1.0}
             y_pred = self.sess.run(self.model.logits, feed_dict=feed_dict)
             loss = None
 
@@ -89,6 +89,8 @@ class TFRecommender(BaseRecommender):
 @gin.configurable
 class AutoEncoder(object):
     """Simple Autoencoder
+
+    TODO: make lam ~ 1/batch_size (now done manually in gin files)
     """
     def __init__(self, n_items, n_layers=2, latent_dim=100, use_biases=True,
                  normalize_inputs=False, tanh=True, loss="nll",
@@ -361,15 +363,6 @@ def sparse_tensor_from_init(init, sparse=True, name='sparse_weight', randomize=F
 
     return w
 
-
-def empty_inits(n_layers, n_items, latent_dim):
-    if n_layers == 1:
-        weights = [csr_matrix((n_items, n_items))]
-    if n_layers > 1:
-        weights = [csr_matrix((n_items, latent_dim))]
-        weights += [csr_matrix((latent_dim, latent_dim))] * (n_layers - 2)
-        weights += [csr_matrix((latent_dim, n_items))]
-    return weights
 
 def mul_noise(x, eps=0.01):
 
