@@ -67,11 +67,13 @@ class LinearRecommender(BaseRecommender):
 @gin.configurable
 class EmbeddingRecommender(BaseRecommender):
 
-    def __init__(self, log_dir, embedding_fn=None, item_nnz=None, batch_size=100, save_embeddings=True):
+    def __init__(self, log_dir, embedding_fn=None, item_nnz=None, user_nnz=None, batch_size=100,
+                 save_embeddings=True):
         """Embedding recommender.
         """
         self.embedding_fn = embedding_fn
         self.item_nnz = item_nnz
+        self.user_nnz = user_nnz
         self.save_embeddings = save_embeddings
 
         self.embeddings = None
@@ -109,6 +111,8 @@ class EmbeddingRecommender(BaseRecommender):
     def predict(self, x, y=None):
         """Predict scores"""
         h = x @ self.embeddings
+        if self.user_nnz is not None:
+            h = prune_rows(h, target_nnz=self.user_nnz)
         y = h @ self.embeddings.T
         if self.priors is not None:
             priors = np.reshape(self.priors, (1, -1))
