@@ -5,6 +5,7 @@ import datetime
 
 import numpy as np
 from scipy.sparse import csr_matrix, issparse, vstack, save_npz, load_npz
+from tqdm import tqdm
 
 
 class Logger(object):
@@ -259,7 +260,7 @@ def load_weights(path):
     return weights, biases
 
 
-def gen_batches(x, y=None, batch_size=100, shuffle=False, print_interval=1):
+def gen_batches(x, y=None, batch_size=100, shuffle=False, print_interval=None):
     """Generate batches from data arrays x and y
     """
     n_examples = x.shape[0]
@@ -271,8 +272,9 @@ def gen_batches(x, y=None, batch_size=100, shuffle=False, print_interval=1):
             yield x[inds], y[inds]
 
 
-def gen_batch_inds(n_examples, batch_size=100, shuffle=False, print_interval=1):
+def gen_batch_inds(n_examples, batch_size=100, shuffle=False, print_interval=None):
 
+    no_tqdm = print_interval is not None
     inds = np.array(range(n_examples)).astype(int)
     if shuffle:
         np.random.shuffle(inds)
@@ -280,7 +282,7 @@ def gen_batch_inds(n_examples, batch_size=100, shuffle=False, print_interval=1):
         yield inds
         return
     n_batches = int(np.ceil(n_examples / batch_size))
-    for i_batch, start in enumerate(range(0, n_examples, batch_size)):
+    for i_batch, start in tqdm(enumerate(range(0, n_examples, batch_size)), total=n_batches, disable=no_tqdm):
         end = min(start + batch_size, n_examples)
         if print_interval is not None and i_batch % print_interval == 0:
             print('  batch {}/{}...'.format(i_batch + 1, n_batches))
