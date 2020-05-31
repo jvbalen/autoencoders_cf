@@ -35,14 +35,14 @@ class BaseRecommender(object):
             t1 = time.perf_counter()
             y_pred, loss = self.predict(x, y)
             prediction_time += time.perf_counter() - t1
+            batch_metrics['nnz'].extend(y_pred.getnnz(axis=1))
             batch_metrics['fin'].extend(count_finite(y_pred))
-            batch_metrics['loss'].append(loss)
 
             # exclude examples from training and validation (if any) and compute rank metrics
             y_pred[x.nonzero()] = np.min(y_pred)
             batch_metrics['ndcg'].extend(ndcg_binary_at_k_batch(y_pred, y, k=100))
-            batch_metrics['r100'].extend(recall_at_k_batch(y_pred, y, k=100))
-            batch_metrics['bce'].extend(binary_crossentropy_from_logits(y_pred, y))
+            batch_metrics['r20'].extend(recall_at_k_batch(y_pred, y, k=50))
+            batch_metrics['r50'].extend(recall_at_k_batch(y_pred, y, k=20))
 
         metrics = {k: np.mean(v) for k, v in batch_metrics.items()}
         metrics['prediction_time'] = prediction_time
