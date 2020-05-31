@@ -7,8 +7,14 @@ from sklearn.feature_extraction.text import TfidfTransformer
 
 @gin.configurable
 def preprocess(x_train, y_train, x_val, y_val, x_test=None, y_test=None, tfidf=False, norm=None,
-               process_labels=False):
+               process_labels=False, cap=None):
 
+    if cap:
+        x_train = x_train[:cap]
+        x_val = x_val[:cap]
+        y_val = y_val[:cap]
+        x_test = x_test[:cap]
+        y_test = y_test[:cap]
     x_train, y_train, x_val, y_val, x_test, y_test = map(to_csr_if_sparse,
                                                          [x_train, y_train, x_val, y_val, x_test, y_test])
 
@@ -17,7 +23,7 @@ def preprocess(x_train, y_train, x_val, y_val, x_test=None, y_test=None, tfidf=F
     elif norm:
         trans = Normalizer(norm=norm)
     else:
-        return x_train, y_train, x_val, y_val
+        return x_train, y_train, x_val, y_val, x_test, y_test
 
     x_train = trans.fit_transform(x_train)
     x_val = trans.transform(x_val)

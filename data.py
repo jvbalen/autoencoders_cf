@@ -17,13 +17,13 @@ class DataLoader():
 
         self.n_items = self.load_n_items()
 
-    def load_data(self, datatype='train'):
-        if datatype == 'train':
+    def load_data(self, split='train'):
+        if split == 'train':
             return self._load_train_data()
-        elif datatype == 'validation':
-            return self._load_tr_te_data(datatype)
-        elif datatype == 'test':
-            return self._load_tr_te_data(datatype)
+        elif split == 'validation':
+            return self._load_tr_te_data(split)
+        elif split == 'test':
+            return self._load_tr_te_data(split)
         else:
             raise ValueError("datatype should be in [train, validation, test]")
 
@@ -36,6 +36,8 @@ class DataLoader():
         return n_items
 
     def _load_train_data(self):
+        """Return x_train, x_train.copy() as there is no y_train
+        """
         path = os.path.join(self.pro_dir, 'train.csv')
 
         tp = pd.read_csv(path)
@@ -45,7 +47,7 @@ class DataLoader():
         data = sparse.csr_matrix((np.ones_like(rows),
                                  (rows, cols)), dtype='float64',
                                  shape=(n_users, self.n_items))
-        return data
+        return data, data.copy()
 
     def _load_tr_te_data(self, datatype='test'):
         tr_path = os.path.join(self.pro_dir, '{}_tr.csv'.format(datatype))
