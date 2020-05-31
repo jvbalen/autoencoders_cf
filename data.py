@@ -123,33 +123,38 @@ def numerize(tp, profile2id, show2id):
 if __name__ == '__main__':
 
     path = sys.argv[1] if len(sys.argv) > 1 else 'ml-20m/ratings.csv'
+    delimiter = sys.argv[2] if len(sys.argv) > 2 else None
     data_dir = os.path.dirname(path)
+
+    MIN_RATING = 3.5
+    MIN_USER_COUNT = 5
+    N_HELDOUT_USERS = 10000
+    RANDOM_SEED = 98765
 
     # Load Data
     print("Load and preprocess dataset")
-    raw_data = pd.read_csv(path, header=0)
+    raw_data = pd.read_csv(path, header=0, delimiter=delimiter)
     if len(raw_data.columns) > 2:
-        user_col, item_col, rating_col = raw_data.columns
-        raw_data = raw_data[raw_data[rating_col] > 3.5]
+        user_col, item_col, rating_col = raw_data.columns[:2]
+        raw_data = raw_data[raw_data[rating_col] > MIN_RATING]
     else:
         user_col, item_col = raw_data.columns
 
     # Filter Data
-    raw_data, user_activity, item_popularity = filter_triplets(raw_data)
+    raw_data, user_activity, item_popularity = filter_triplets(raw_data, min_uc=MIN_USER_COUNT)
 
     # Shuffle User Indices
     unique_uid = user_activity.index
-    np.random.seed(98765)
+    np.random.seed(RANDOM_SEED)
     idx_perm = np.random.permutation(unique_uid.size)
     unique_uid = unique_uid[idx_perm]
 
     n_users = unique_uid.size
-    n_heldout_users = 10000
 
     # Split Train/Validation/Test User Indices
-    tr_users = unique_uid[:(n_users - n_heldout_users * 2)]
-    vd_users = unique_uid[(n_users - n_heldout_users * 2): (n_users - n_heldout_users)]
-    te_users = unique_uid[(n_users - n_heldout_users):]
+    tr_users = unique_uid[:(n_users - N_HELDOUT_USERS * 2)]
+    vd_users = unique_uid[(n_users - N_HELDOUT_USERS * 2): (n_users - N_HELDOUT_USERS)]
+    te_users = unique_uid[(n_users - N_HELDOUT_USERS):]
 
     train_plays = raw_data.loc[raw_data[user_col].isin(tr_users)]
     unique_sid = pd.unique(train_plays[item_col])
