@@ -26,7 +26,7 @@ class BaseRecommender(object):
         """
         raise NotImplementedError()
 
-    def evaluate(self, x_val, y_val, other_metrics=None):
+    def evaluate(self, x_val, y_val, other_metrics=None, test=False):
         """Evaluate model on observed and unobserved validation data x_val, y_val
         """
         prediction_time = 0
@@ -49,6 +49,6 @@ class BaseRecommender(object):
         if other_metrics:
             metrics.update(other_metrics)
         if self.logger is not None:
-            self.logger.log_metrics(metrics, config=gin.operative_config_str())
+            self.logger.log_metrics(metrics, config=gin.operative_config_str(), test=test)
 
         return metrics
