@@ -8,7 +8,7 @@ from preprocessing import preprocess
 
 
 @gin.configurable
-def experiment(data_path, Recommender=LinearRecommender, log_dir=None, cap=None, test=False):
+def experiment(data_path, Recommender=LinearRecommender, log_dir=None, cap=None):
 
     print('Loading data...')
     loader = DataLoader(data_path)

@@ -126,6 +126,7 @@ if __name__ == '__main__':
 
     path = sys.argv[1] if len(sys.argv) > 1 else 'ml-20m/ratings.csv'
     delimiter = sys.argv[2] if len(sys.argv) > 2 else None
+    has_header = bool(int(sys.argv[3])) if len(sys.argv) > 3 else True
     data_dir = os.path.dirname(path)
 
     MIN_RATING = 3.5
@@ -135,9 +136,9 @@ if __name__ == '__main__':
 
     # Load Data
     print("Load and preprocess dataset")
-    raw_data = pd.read_csv(path, header=0, delimiter=delimiter)
+    raw_data = pd.read_csv(path, header=0 if has_header else None, delimiter=delimiter)
     if len(raw_data.columns) > 2:
-        user_col, item_col, rating_col = raw_data.columns[:2]
+        user_col, item_col, rating_col = raw_data.columns[:3]
         raw_data = raw_data[raw_data[rating_col] > MIN_RATING]
     else:
         user_col, item_col = raw_data.columns
