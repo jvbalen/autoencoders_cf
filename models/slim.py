@@ -219,7 +219,8 @@ def cholesky_embeddings(x, l2_reg=500, beta=2.0, row_nnz=None, sort_by_nn=False)
         E = cholesky(A, ordering_method='natural').L()
     clock.interval()
     print('pruning factors')
-    E = prune_rows(E, target_nnz=row_nnz)
+    if row_nnz is not None:
+        E = prune_rows(E, target_nnz=row_nnz)
     clock.interval()
 
     print('computing priors')
