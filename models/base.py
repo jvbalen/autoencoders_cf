@@ -4,8 +4,7 @@ from collections import defaultdict
 import gin
 import numpy as np
 
-from metric import ndcg_binary_at_k_batch, recall_at_k_batch, \
-    binary_crossentropy_from_logits, count_finite
+from metric import ndcg_binary_at_k_batch, recall_at_k_batch, count_finite, count_nonzero
 from util import Logger, gen_batches
 
 
@@ -35,7 +34,7 @@ class BaseRecommender(object):
             t1 = time.perf_counter()
             y_pred, loss = self.predict(x, y)
             prediction_time += time.perf_counter() - t1
-            batch_metrics['nnz'].extend(y_pred.getnnz(axis=1))
+            batch_metrics['nnz'].extend(count_nonzero(y_pred))
             batch_metrics['fin'].extend(count_finite(y_pred))
 
             # exclude examples from training and validation (if any) and compute rank metrics

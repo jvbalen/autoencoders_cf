@@ -52,7 +52,14 @@ def binary_crossentropy_from_logits(x_pred, x_true):
 
 
 def count_finite(x_pred, x_true=None):
-
+    # TODO: be more clever about sparse x_pred
     x_pred = x_pred.toarray() if issparse(x_pred) else np.array(x_pred)
 
     return np.mean(np.isfinite(x_pred), axis=1)
+
+
+def count_nonzero(x_pred, x_true=None):
+    # TODO: be more clever about sparse x_pred
+    x_pred = x_pred.toarray() if issparse(x_pred) else np.array(x_pred)
+
+    return np.mean(x_pred != 0, axis=1)
