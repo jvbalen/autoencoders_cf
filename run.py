@@ -23,7 +23,7 @@ def experiment(data_path, Recommender=LinearRecommender, log_dir=None, cap=None)
     print('Training...')
     recommender = Recommender(log_dir=log_dir)
     val_metrics = recommender.train(x_train, y_train, x_val, y_val)
-    test_metrics = recommender.evaluate(x_test, y_test)
+    test_metrics = recommender.evaluate(x_test, y_test, test=True)
 
     return val_metrics, test_metrics
 
