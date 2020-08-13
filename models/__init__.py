@@ -3,6 +3,8 @@ from models.skl import SKLRecommender
 from models.tf import TFRecommender
 from models.distill import DistilledRecommender
 from models.mf import UserFactorRecommender, LogisticMFRecommender
+from models.baseline import PopularityRecommender
+from models.gl import SpLoRecommender, ALSRecommender, WSLIMRecommender
 
 __all__ = ['LinearRecommender',
            'LinearRecommenderFromFile',
@@ -10,4 +12,8 @@ __all__ = ['LinearRecommender',
            'TFRecommender',
            'DistilledRecommender',
            'UserFactorRecommender',
-           'LogisticMFRecommender']
+           'LogisticMFRecommender',
+           'PopularityRecommender',
+           'SpLoRecommender',
+           'ALSRecommender',
+           'WSLIMRecommender']
