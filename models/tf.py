@@ -8,7 +8,7 @@ import tensorflow as tf
 from tensorflow.contrib.layers import apply_regularization, l2_regularizer
 
 from models.base import BaseRecommender
-from util import Logger, load_weights, gen_batches, to_float32
+from util import Logger, load_weights_biases, gen_batches, to_float32
 
 gin.external_configurable(tf.train.GradientDescentOptimizer)
 gin.external_configurable(tf.train.AdamOptimizer)
@@ -19,9 +19,6 @@ class TFRecommender(BaseRecommender):
 
     def __init__(self, log_dir=None, batch_size=100, n_epochs=10):
         """Build a TF-based auto-encoder model with given initial weights.
-
-        TODO:
-        - model snapshots (check lines containing "best_ndcg" in Liang's notebook)
         """
         self.model = None
         self.log_dir = log_dir
@@ -36,6 +33,7 @@ class TFRecommender(BaseRecommender):
 
         tf.reset_default_graph()
         self.model = AutoEncoder(n_items=x_train.shape[1])
+        best_ndcg = 0.0
         with tf.compat.v1.Session() as self.sess:
             self.logger = TFLogger(self.log_dir, self.sess)
             self.logger.log_config(gin.operative_config_str())
@@ -48,7 +46,12 @@ class TFRecommender(BaseRecommender):
                 print(f'Training. Epoch = {epoch + 1}/{self.n_epochs}')
                 self.train_one_epoch(x_train, y_train)
                 print('Evaluating...')
-                metrics = self.evaluate(x_val, y_val)
+                metrics = self.evaluate(x_val, y_val, other_metrics={'epoch': epoch})
+
+            if metrics['ndcg'] > best_ndcg:
+                best_ndcg = metrics['ndcg']
+                self.model.save(self.sess, log_dir=self.logger.log_dir)
+        self.sess = None
 
         return metrics
 
@@ -68,8 +71,7 @@ class TFRecommender(BaseRecommender):
         x, y = self.prepare_batch(x, y)
         if y is not None:
             feed_dict = {self.model.input_ph: x, self.model.label_ph: y, self.model.keep_prob_ph: 1.0}
-            y_pred, loss = self.sess.run([self.model.logits, self.model.loss],
-                                         feed_dict=feed_dict)
+            y_pred, loss = self.sess.run([self.model.logits, self.model.loss], feed_dict=feed_dict)
         else:
             feed_dict = {self.model.input_ph: x, self.model.keep_prob_ph: 1.0}
             y_pred = self.sess.run(self.model.logits, feed_dict=feed_dict)
@@ -84,6 +86,21 @@ class TFRecommender(BaseRecommender):
             y = to_float32(y, to_dense=True)
 
         return x, y
+
+    def evaluate(self, x_val, y_val, other_metrics=None, test=False):
+        """Wrapper around BaseRecommender.evaluate that restores the model
+        from the log directory if the session is None.
+        """
+
+        if self.sess is None:
+            with tf.compat.v1.Session() as self.sess:
+                self.model.restore(self.sess, log_dir=self.logger.log_dir)
+                results = super().evaluate(x_val, y_val, other_metrics, test)
+            self.sess = None
+        else:
+            results = super().evaluate(x_val, y_val, other_metrics, test)
+
+        return results
 
 
 @gin.configurable
@@ -102,7 +119,7 @@ class AutoEncoder(object):
         self.latent_dim = latent_dim
         self.use_biases = use_biases
         self.normalize_inputs = normalize_inputs
-        self.tanh = True
+        self.tanh = tanh
         self.loss = loss
         self.lam = lam
         self.lr = lr
@@ -189,6 +206,14 @@ class AutoEncoder(object):
         # multiply 2 so that it is back in the same scale
         return 2 * reg_var
 
+    def save(self, sess, log_dir):
+
+        self.saver.save(sess, '{}/model'.format(log_dir))
+
+    def restore(self, sess, log_dir):
+
+        self.saver.restore(sess, '{}/model'.format(log_dir))
+
 
 @gin.configurable
 class SparseAutoEncoder(object):
@@ -199,8 +224,8 @@ class SparseAutoEncoder(object):
                  normalize_inputs=False, shared_weights=False, loss="mse",
                  keep_prob=1.0, lam=0.01, lr=3e-4, random_seed=None,
                  Optimizer=tf.train.AdamOptimizer):
+        weights, biases = load_weights_and_biases(weights_path)
 
-        weights, biases = load_weights(weights_path)
         # make init from (single) weights file break if n_layers > 1 and weights not square
         assert n_layers > 2 or weights.shape[0] == weights.shape[1]
         w_inits = [weights] * n_layers
