@@ -34,7 +34,6 @@ class SKLRecommender(BaseRecommender):
         """Train and evaluate a sklearn model"""
         self.model.fit(x_train, y_train.toarray() > 0.0)
         if self.logger is not None:
-            self.logger.log_config(gin.operative_config_str())
             self.logger.save_weights(*coefs_from_model(self.model))
         metrics = self.evaluate(x_val, y_val)
 

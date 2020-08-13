@@ -64,8 +64,7 @@ class UserFactorRecommender(LinearRecommender):
 
         for i in range(self.als_iterations):
             self.weights = self.weights_fn(x_train)
-            x_train = vstack(self.user_vector(x) for x, _ in
-                             gen_batches(x_train, batch_size=1, print_interval=100))
+            x_train = vstack(self.user_vector(x) for x, _ in gen_batches(x_train, batch_size=1))
 
         return super().train(x_train, y_train, x_val, y_val)
 
@@ -155,10 +154,8 @@ class LogisticMFRecommender(BaseRecommender):
         train_time = time.perf_counter() - t1
         self.logger = logger
 
-        if self.logger is not None:
-            self.logger.log_config(gin.operative_config_str())
-            if self.save_weights:
-                self.logger.save_weights(self.item_embeddings)
+        if self.save_weights and self.logger is not None:
+            self.logger.save_weights(self.item_embeddings)
 
         print('Evaluating...')
         density = self.item_embeddings.size / np.prod(self.item_embeddings.shape)
