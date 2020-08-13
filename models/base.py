@@ -4,7 +4,7 @@ from collections import defaultdict
 import gin
 import numpy as np
 
-from metric import ndcg_binary_at_k_batch, recall_at_k_batch, count_finite, count_nonzero
+from metric import ndcg_binary_at_k_batch, recall_at_k_batch, count_finite, count_nonzero, mean_item_rank
 from util import Logger, gen_batches
 
 
@@ -27,6 +27,8 @@ class BaseRecommender(object):
 
     def evaluate(self, x_val, y_val, other_metrics=None, test=False):
         """Evaluate model on observed and unobserved validation data x_val, y_val
+
+        Use dict parameter `other_metrics` to add/replace metrics
         """
         prediction_time = 0
         batch_metrics = defaultdict(list)
@@ -42,12 +44,14 @@ class BaseRecommender(object):
             batch_metrics['ndcg'].extend(ndcg_binary_at_k_batch(y_pred, y, k=100))
             batch_metrics['r20'].extend(recall_at_k_batch(y_pred, y, k=50))
             batch_metrics['r50'].extend(recall_at_k_batch(y_pred, y, k=20))
+            batch_metrics['mean_item_rank'].extend(mean_item_rank(y_pred, y_all=y_val, k=100))
 
         metrics = {k: np.mean(v) for k, v in batch_metrics.items()}
         metrics['prediction_time'] = prediction_time
         if other_metrics:
             metrics.update(other_metrics)
         if self.logger is not None:
+            self.logger.log_config(gin.operative_config_str())
             self.logger.log_metrics(metrics, config=gin.operative_config_str(), test=test)
 
         return metrics

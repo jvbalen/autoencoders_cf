@@ -63,3 +63,14 @@ def count_nonzero(x_pred, x_true=None):
     x_pred = x_pred.toarray() if issparse(x_pred) else np.array(x_pred)
 
     return np.mean(x_pred != 0, axis=1)
+
+
+def mean_item_rank(y_pred, y_all, k=100):
+
+    item_counts = np.array(y_all.sum(axis=0)).flatten()
+    item_ranks = np.argsort(-item_counts)
+
+    y_pred = y_pred.toarray() if issparse(y_pred) else np.array(y_pred)
+    y_pred_topk = np.argpartition(-y_pred, k, axis=1)[:, :k]
+
+    return np.median(item_ranks[y_pred_topk], axis=1)
