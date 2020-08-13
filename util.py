@@ -41,12 +41,12 @@ class Logger(object):
                         continue
                     f.write(','.join(line.split(' = ')) + '\n')
 
-    def save_weights(self, weights, biases=None):
+    def save_weights(self, weights, other=dict()):
         path = os.path.join(self.log_dir, 'weights.npz')
-        if weights is not None:
-            save_weights(path, weights, biases)
-        else:
-            print('`coefs` is None: nothing to save')
+        if not issparse(weights):
+            other.update({'weights': weights})
+            weights = None
+        save_weights(path, weights, other=other)
 
 
 class Node(object):
@@ -93,22 +93,19 @@ class Clock(object):
         self.prefix = prefix
         self.suffix = suffix
 
-    def tic(self):
+    def tic(self, message=None):
         self.t0 = time.perf_counter()
+        if self.verbose and message is not None:
+            print(self.prefix + message + self.suffix)
 
     def toc(self):
         elapsed = time.perf_counter() - self.t0
         if self.verbose:
-            print(f'    elapsed: {elapsed:.3f}')
-
-    def print_message(self, message=None):
-        if self.verbose and message is not None:
-            print(self.prefix + message + self.suffix)
+            print(f'{self.prefix}  elapsed: {elapsed:.3f}')
 
     def interval(self, message=None):
         self.toc()
-        self.print_message(message)
-        self.tic()
+        self.tic(message)
 
 
 def prune_global(x, target_density=0.005, copy=True):
@@ -121,8 +118,7 @@ def prune_global(x, target_density=0.005, copy=True):
     """
     target_nnz = int(target_density * np.prod(x.shape))
     if issparse(x):
-        if copy:
-            x_sp = x.copy()
+        x_sp = x.copy() if copy else x
         x_sp.eliminate_zeros()
         if x_sp.nnz <= target_nnz:
             return x_sp
@@ -218,56 +214,57 @@ def sparse_union(x, y):
     return x + y - y.multiply(x_nonzero)
 
 
-def save_weights(path, weights, biases=None):
-    """Save weights and biases to a Numpy npz file with `np.savez`.
+def save_weights(path, sparse_weights, other=None):
+    """Save a sparse matrix and optional other (dense) arrays to a Numpy npz file.
 
-    If the weights are sparse, `scipy.sparse.save_npz` is used.
-    If the weights are sparse and biases is not None, we
+    To save sparse_weights, `scipy.sparse.save_npz` is used.
+    If other arrays are given, they must be dense,
     slighlty abuse the format used by `save_npz` and add an extra
     array "biases" to the same file. This does not interfere
     with `scipy.sparse.load_npz`.
     """
-    if issparse(weights):
-        save_npz(path, weights)
-        if biases is not None:
-            data = np.load(path)
-            np.savez(path, biases=biases, **data)
-    else:
-        if biases is None:
-            np.savez(path, weights=weights)
-        else:
-            np.savez(path, weights=weights, biases=biases)
+    save_npz(path, sparse_weights)
+    if other:
+        data = np.load(path)
+        data.update(other)
+        np.savez(path, **data)
 
 
 def load_weights(path):
     """Load weights and biases from a Numpy npz file saved with `save_weights`"""
     try:
-        # look for sparse matrix
-        weights = load_npz(path)
-        # check if the same file also contains the intercepts (see `save_weights`)
-        data = np.load(path, allow_pickle=True)
-        try:
-            biases = data.get('biases')
-        except KeyError:
-            biases = data.get('intercepts', None)
+        sparse_weights = load_npz(path)  # look for sparse matrix
     except ValueError:
-        # look for dense arrays
-        data = np.load(path, allow_pickle=True)
+        sparse_weights = None  # support files not containing a sparse array
+    other = np.load(path, allow_pickle=True)
+
+    return sparse_weights, other
+
+
+def load_weights_biases(path):
+
+    weights, other = load_weights(path)
+    if weights is None:
         try:
-            weights = data['weights']
-            biases = data.get('biases', None)
+            weights = other['weights']
         except KeyError:
-            weights = data['coefs']
-            biases = data.get('intercepts', None)
+            weights = other['coefs']
+    try:
+        biases = other['biases']
+    except KeyError:
+        try:
+            biases = other['intercepts']
+        except KeyError:
+            biases = None
 
     return weights, biases
 
 
-def gen_batches(x, y=None, batch_size=100, shuffle=False, print_interval=None):
+def gen_batches(x, y=None, batch_size=100, shuffle=False, progress_bar=True):
     """Generate batches from data arrays x and y
     """
     n_examples = x.shape[0]
-    batch_inds = gen_batch_inds(n_examples, batch_size=batch_size, shuffle=shuffle, print_interval=print_interval)
+    batch_inds = gen_batch_inds(n_examples, batch_size=batch_size, shuffle=shuffle, progress_bar=progress_bar)
     for inds in batch_inds:
         if y is None:
             yield x[inds], None
@@ -275,9 +272,8 @@ def gen_batches(x, y=None, batch_size=100, shuffle=False, print_interval=None):
             yield x[inds], y[inds]
 
 
-def gen_batch_inds(n_examples, batch_size=100, shuffle=False, print_interval=None):
+def gen_batch_inds(n_examples, batch_size=100, shuffle=False, progress_bar=True):
 
-    no_tqdm = print_interval is not None
     inds = np.array(range(n_examples)).astype(int)
     if shuffle:
         np.random.shuffle(inds)
@@ -285,10 +281,8 @@ def gen_batch_inds(n_examples, batch_size=100, shuffle=False, print_interval=Non
         yield inds
         return
     n_batches = int(np.ceil(n_examples / batch_size))
-    for i_batch, start in tqdm(enumerate(range(0, n_examples, batch_size)), total=n_batches, disable=no_tqdm):
+    for i_batch, start in tqdm(enumerate(range(0, n_examples, batch_size)), total=n_batches, disable=not progress_bar):
         end = min(start + batch_size, n_examples)
-        if print_interval is not None and i_batch % print_interval == 0:
-            print('  batch {}/{}...'.format(i_batch + 1, n_batches))
         yield inds[start:end]
 
 
