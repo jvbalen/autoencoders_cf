@@ -10,7 +10,8 @@ import scipy as sp
 from scipy.sparse import csr_matrix, csc_matrix, coo_matrix, issparse, eye, vstack, tril, find, triu
 
 from models.base import BaseRecommender
-from util import Clock, Node, load_weights, prune_global, prune_rows, gen_batches
+
+from util import Clock, Node, load_weights_biases, prune, prune_global, prune_rows, gen_batches
 
 
 @gin.configurable
@@ -46,10 +47,8 @@ class LinearRecommender(BaseRecommender):
         if self.target_density < 1.0:
             self.weights = prune_global(self.weights, target_density=self.target_density)
         dt = time.perf_counter() - t1
-        if self.logger is not None:
-            self.logger.log_config(gin.operative_config_str())
-            if self.save_weights:
-                self.logger.save_weights(self.weights)
+        if self.save_weights and self.logger is not None:
+            self.logger.save_weights(self.weights)
 
         print('Evaluating...')
         density = self.weights.size / np.prod(self.weights.shape)
@@ -92,10 +91,8 @@ class EmbeddingRecommender(BaseRecommender):
         if self.item_nnz is not None:
             self.embeddings = prune_rows(self.embeddings, target_nnz=self.item_nnz)
         dt = time.perf_counter() - t1
-        if self.logger is not None:
-            self.logger.log_config(gin.operative_config_str())
-            if self.save_embeddings:
-                self.logger.save_weights(self.embeddings)
+        if self.save_embeddings and self.logger is not None:
+            self.logger.save_weights(self.embeddings)
 
         print('Evaluating...')
         density = self.embeddings.size / np.prod(self.embeddings.shape)
@@ -130,7 +127,7 @@ class LinearRecommenderFromFile(BaseRecommender):
         Given a file containing 2d weights and optional 1d biases,
         predict item scores.
         """
-        weights, biases = load_weights(path)
+        weights, biases = load_weights_biases(path)
         if biases is None:
             print('LinearRecommenderFromFile: no intercepts loaded...')
             biases = np.zeros((1, weights.shape[1]))
@@ -181,7 +178,7 @@ def closed_form_slim(x, l2_reg=500):
 
 
 @gin.configurable
-def cholesky_embeddings(x, l2_reg=500, beta=2.0, row_nnz=None, sort_by_nn=False):
+def cholesky_embeddings(x, l2_reg=500, beta=2.0, row_nnz=None, sort_by_nn=False, target_density=1.0):
     """Cholesky factors of -P + beta * I
 
     If we're only interested in recommending new items, changes
@@ -219,8 +216,7 @@ def cholesky_embeddings(x, l2_reg=500, beta=2.0, row_nnz=None, sort_by_nn=False)
         E = cholesky(A, ordering_method='natural').L()
     clock.interval()
     print('pruning factors')
-    if row_nnz is not None:
-        E = prune_rows(E, target_nnz=row_nnz)
+    E = prune(E, target_nnz=row_nnz, target_density=1.0)
     clock.interval()
 
     print('computing priors')
@@ -569,13 +565,13 @@ def naive_incremental_slim(x, batch_size=50, l2_reg=10, target_density=1.0):
     n_users, n_items = x.shape
     B = csr_matrix((n_items, n_items))
     for x_batch, _ in gen_batches(x, batch_size=batch_size):
-        print('  submatrix...')
+        # print('  submatrix...')
         XS, cols = drop_empty_cols(x_batch)
-        print('  computing slim B for batch...')
+        # print('  computing slim B for batch...')
         G_upd = XS.T @ XS
         B_upd = closed_form_slim_from_gramm(G_upd, l2_reg=l2_reg)
         B_upd = coo_matrix((B_upd[G_upd.nonzero()], G_upd.nonzero()), shape=B.shape)
-        print('  updating...')
+        # print('  updating...')
         B = add_submatrix(B, B_upd, where=(cols, cols), target_density=target_density)
 
     return B
@@ -755,7 +751,7 @@ def gen_branches_from_tree(tree, max_len=1000, verbose=False):
                 print(f'-> subtrees too big, moving into subtree {largest+1} of {node.n_children}')
 
 
-def add_submatrix(A, dA, where=None, target_density=1.0, max_density=None):
+def add_submatrix(A, dA, where=None, target_density=1.0, max_density=None, verbose=True):
     """Add submatrix `sub` to `A` at indices `where = (rows, cols)`.
     Optionally prune the result down to density `target_density`
     """
@@ -773,7 +769,8 @@ def add_submatrix(A, dA, where=None, target_density=1.0, max_density=None):
     dA.eliminate_zeros()
     A += dA
     if A.nnz > max_density * np.prod(A.shape):
-        print(f'  density > max_density: pruning result')
+        if verbose:
+            print(f'  density > max_density: pruning result')
         A = prune_global(A, target_density=target_density, copy=False)
 
     return A
