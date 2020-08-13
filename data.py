@@ -47,7 +47,7 @@ class DataLoader():
         data = sparse.csr_matrix((np.ones_like(rows),
                                  (rows, cols)), dtype='float64',
                                  shape=(n_users, self.n_items))
-        return data, data.copy()
+        return data, None
 
     def _load_tr_te_data(self, datatype='test'):
         tr_path = os.path.join(self.pro_dir, '{}_tr.csv'.format(datatype))
