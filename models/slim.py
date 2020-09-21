@@ -757,7 +757,9 @@ def add_submatrix(A, dA, where=None, target_density=1.0, max_density=None, verbo
     """
     if max_density is None:
         max_density = 3 * target_density
-    if dA.size > max_density * np.prod(A.shape):
+    max_nnz = max_density * np.prod(A.shape)
+    if A.nnz >= max_nnz and dA.size > max_nnz:
+        # if A is already capacity, pre-emptively drop elements of dA < A[A > 0].abs.min
         thr = np.min(np.abs(A.data[np.abs(A.data) > 0]))
         dA[np.abs(dA) < thr] = 0.0
     if where is not None:
