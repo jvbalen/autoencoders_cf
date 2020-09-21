@@ -10,7 +10,7 @@ from scipy.sparse import random
 from data import DataLoader
 from util import prune, save_weights, to_float32
 from preprocessing import preprocess
-from models.slim import LinearRecommenderFromFile
+from models.linear import LinearRecommenderFromFile
 from models.tf import TFRecommender, WAE
 
 
@@ -26,7 +26,7 @@ def test_wae_inits(tmp_path):
     np.fill_diagonal(w, 0.0)  # in-place
     b = np.random.randn(200)
     w_sp = prune(w, target_density=0.1)
-    save_weights(weights_path, weights=w_sp, biases=b)
+    save_weights(weights_path, sparse_weights=w_sp, other={'biases': b})
 
     model_np = LinearRecommenderFromFile(log_dir, path=weights_path)
     model_tf = WAE(w_inits=[w_sp], b_inits=[b], loss='bce')

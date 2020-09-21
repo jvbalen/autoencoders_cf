@@ -1,13 +1,17 @@
-from models.slim import LinearRecommender, LinearRecommenderFromFile
+from models.linear import LinearRecommender, LinearRecommenderFromFile
 from models.skl import SKLRecommender
 from models.tf import TFRecommender
 from models.distill import DistilledRecommender
 from models.mf import UserFactorRecommender, LogisticMFRecommender
+from models.base import PopularityRecommender
+from models.als import SpLoRecommender, ALSRecommender, WSLIMRecommender
+from models.boost import BoostedBlockSLIM
 
-__all__ = ['LinearRecommender',
-           'LinearRecommenderFromFile',
+__all__ = ['LinearRecommender', 'LinearRecommenderFromFile',
            'SKLRecommender',
            'TFRecommender',
            'DistilledRecommender',
-           'UserFactorRecommender',
-           'LogisticMFRecommender']
+           'UserFactorRecommender', 'LogisticMFRecommender',
+           'PopularityRecommender',
+           'SpLoRecommender', 'ALSRecommender', 'WSLIMRecommender',
+           'BoostedBlockSLIM']

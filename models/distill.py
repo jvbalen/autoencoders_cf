@@ -6,14 +6,12 @@ from models.tf import TFRecommender
 @gin.configurable
 class DistilledRecommender(TFRecommender):
 
-    def __init__(self, log_dir=None, teacher=None, weights_path=None,
-                 n_layers=1, batch_size=100, n_epochs=10):
+    def __init__(self, log_dir=None, teacher=None, batch_size=100, n_epochs=10):
         """Build a sparse, TF-based wide auto-encoder model with given initial sparse weights,
         and train it to predict the predictions of a *trained* teacher model.
         """
         self.teacher = teacher
-        super().__init__(log_dir=log_dir, weights_path=weights_path,
-                         n_layers=n_layers, batch_size=batch_size, n_epochs=n_epochs)
+        super().__init__(log_dir=log_dir, batch_size=batch_size, n_epochs=n_epochs)
 
     def prepare_batch(self, x, y=None):
         """Convert a batch of x and y to a sess.run-compatible format,

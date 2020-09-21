@@ -1,0 +1,18 @@
+# Parameters for experiment:
+# ==============================================================================
+experiment.Recommender = @EmbeddingRecommender
+experiment.cap = None
+
+# Parameters for EmbeddingRecommender:
+# ==============================================================================
+EmbeddingRecommender.batch_size = 100
+EmbeddingRecommender.embedding_fn = @cholesky_embeddings
+EmbeddingRecommender.save_embeddings = False
+EmbeddingRecommender.item_nnz = 140
+EmbeddingRecommender.user_nnz = 140
+
+# Parameters for cholesky_embeddings:
+# ==============================================================================
+cholesky_embeddings.beta = 2.0
+cholesky_embeddings.l2_reg = 100.0
+cholesky_embeddings.sort_by_nn = False

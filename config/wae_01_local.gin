@@ -1,8 +1,0 @@
-# 1-layer WAE with NLL loss, bias and normalization
-
-experiment.Recommender = @TFRecommender
-preprocess.tfidf = True
-preprocess.norm = 'l2'
-
-TFRecommender.weights_path = '/Users/jan/experiments/wae/logistic_pruned_01.npz'
-TFRecommender.n_epochs = 0

@@ -8,25 +8,24 @@ from preprocessing import preprocess
 
 
 @gin.configurable
-def experiment(data_path, Recommender=LinearRecommender, log_dir=None, cap=None):
+def experiment(data_path, Recommender=LinearRecommender, log_dir=None):
 
     print('Loading data...')
     loader = DataLoader(data_path)
-    x_train = loader.load_data('train')
+    x_train, y_train = loader.load_data('train')
     x_val, y_val = loader.load_data('validation')
+    x_test, y_test = loader.load_data('test')
 
     print('Preprocessing...')
-    if cap:
-        x_train = x_train[:cap]
-        x_val = x_val[:cap]
-        y_val = y_val[:cap]
-    x_train, y_train, x_val, y_val = preprocess(x_train, x_train.copy(), x_val, y_val)
+    x_train, y_train, x_val, y_val, x_test, y_test = \
+        preprocess(x_train, y_train, x_val, y_val, x_test, y_test)
 
     print('Training...')
     recommender = Recommender(log_dir=log_dir)
-    metrics = recommender.train(x_train, y_train, x_val, y_val)
+    val_metrics = recommender.train(x_train, y_train, x_val, y_val)
+    test_metrics = recommender.evaluate(x_test, y_test, test=True)
 
-    return metrics
+    return val_metrics, test_metrics
 
 
 if __name__ == '__main__':
@@ -41,5 +40,5 @@ if __name__ == '__main__':
     if args.config:
         gin.parse_config_file(args.config)
 
-    metrics = experiment(args.data, log_dir=args.logdir)
-    print(metrics)
+    val_metrics, test_metrics = experiment(args.data, log_dir=args.logdir)
+    print(test_metrics)

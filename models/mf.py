@@ -25,7 +25,7 @@ from scipy.special import expit
 from scipy.sparse import csr_matrix, vstack, issparse, eye, find
 
 from models.base import BaseRecommender
-from models.slim import LinearRecommender, batched_gramm, closed_form_slim, add_submatrix
+from models.linear import LinearRecommender, batched_gramm, closed_form_slim, add_submatrix
 from util import Clock, gen_batches, gen_batch_inds, prune_global, prune_rows
 from metric import binary_crossentropy_from_logits
 
@@ -64,8 +64,7 @@ class UserFactorRecommender(LinearRecommender):
 
         for i in range(self.als_iterations):
             self.weights = self.weights_fn(x_train)
-            x_train = vstack(self.user_vector(x) for x, _ in
-                             gen_batches(x_train, batch_size=1, print_interval=100))
+            x_train = vstack(self.user_vector(x) for x, _ in gen_batches(x_train, batch_size=1))
 
         return super().train(x_train, y_train, x_val, y_val)
 
@@ -107,8 +106,7 @@ class UserFactorRecommender(LinearRecommender):
 
     def predict(self, X, y=None):
         """Predict scores"""
-        user_vectors = vstack(self.user_vector(x) for x, _ in
-                              gen_batches(X, batch_size=1, print_interval=None))
+        user_vectors = vstack(self.user_vector(x) for x, _ in gen_batches(X, batch_size=1))
         y_pred = user_vectors @ self.weights
 
         return y_pred, np.nan
@@ -156,10 +154,8 @@ class LogisticMFRecommender(BaseRecommender):
         train_time = time.perf_counter() - t1
         self.logger = logger
 
-        if self.logger is not None:
-            self.logger.log_config(gin.operative_config_str())
-            if self.save_weights:
-                self.logger.save_weights(self.item_embeddings)
+        if self.save_weights and self.logger is not None:
+            self.logger.save_weights(self.item_embeddings)
 
         print('Evaluating...')
         density = self.item_embeddings.size / np.prod(self.item_embeddings.shape)

@@ -45,15 +45,32 @@ def binary_crossentropy_from_logits(x_pred, x_true):
     x_pred = x_pred.toarray() if issparse(x_pred) else np.array(x_pred)
     x_true = x_true.toarray() if issparse(x_true) else np.array(x_true)
 
-    # bce = x_pred - x_pred * x_true + np.log(1 + np.exp(-x_pred))                   # stable when x > 0?
-    # bce = - x_pred * x_true + np.log(1 + np.exp(x_pred))                           # stable when x < 0?
-    bce = np.maximum(x_pred, 0) - x_pred * x_true + np.log(1 + np.exp(-np.abs(x_pred)))   # best of both?
+    # bce = x_pred - x_pred * x_true + np.log(1 + np.exp(-x_pred))
+    bce = np.maximum(x_pred, 0) - x_pred * x_true + np.log(1 + np.exp(-np.abs(x_pred)))   # more stable
 
     return bce
 
 
 def count_finite(x_pred, x_true=None):
-
+    # TODO: be more clever about sparse x_pred
     x_pred = x_pred.toarray() if issparse(x_pred) else np.array(x_pred)
 
     return np.mean(np.isfinite(x_pred), axis=1)
+
+
+def count_nonzero(x_pred, x_true=None):
+    # TODO: be more clever about sparse x_pred
+    x_pred = x_pred.toarray() if issparse(x_pred) else np.array(x_pred)
+
+    return np.mean(x_pred != 0, axis=1)
+
+
+def mean_item_rank(y_pred, y_all, k=100):
+
+    item_counts = np.array(y_all.sum(axis=0)).flatten()
+    item_ranks = np.argsort(-item_counts)
+
+    y_pred = y_pred.toarray() if issparse(y_pred) else np.array(y_pred)
+    y_pred_topk = np.argpartition(-y_pred, k, axis=1)[:, :k]
+
+    return np.median(item_ranks[y_pred_topk], axis=1)

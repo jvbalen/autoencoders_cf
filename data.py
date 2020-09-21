@@ -1,4 +1,6 @@
-
+"""
+From https://github.com/younggyoseo/vae-cf-pytorch with minor changes
+"""
 import os
 import sys
 
@@ -17,13 +19,13 @@ class DataLoader():
 
         self.n_items = self.load_n_items()
 
-    def load_data(self, datatype='train'):
-        if datatype == 'train':
+    def load_data(self, split='train'):
+        if split == 'train':
             return self._load_train_data()
-        elif datatype == 'validation':
-            return self._load_tr_te_data(datatype)
-        elif datatype == 'test':
-            return self._load_tr_te_data(datatype)
+        elif split == 'validation':
+            return self._load_tr_te_data(split)
+        elif split == 'test':
+            return self._load_tr_te_data(split)
         else:
             raise ValueError("datatype should be in [train, validation, test]")
 
@@ -36,6 +38,8 @@ class DataLoader():
         return n_items
 
     def _load_train_data(self):
+        """Return x_train, x_train.copy() as there is no y_train
+        """
         path = os.path.join(self.pro_dir, 'train.csv')
 
         tp = pd.read_csv(path)
@@ -45,7 +49,7 @@ class DataLoader():
         data = sparse.csr_matrix((np.ones_like(rows),
                                  (rows, cols)), dtype='float64',
                                  shape=(n_users, self.n_items))
-        return data
+        return data, None
 
     def _load_tr_te_data(self, datatype='test'):
         tr_path = os.path.join(self.pro_dir, '{}_tr.csv'.format(datatype))
@@ -70,22 +74,28 @@ class DataLoader():
 
 
 def get_count(tp, id):
-    playcount_groupbyid = tp[[id]].groupby(id, as_index=False)
+    playcount_groupbyid = tp[[id]].groupby(id, as_index=True)
     count = playcount_groupbyid.size()
     return count
 
 
 def filter_triplets(tp, min_uc=5, min_sc=0):
     if min_sc > 0:
-        itemcount = get_count(tp, item_col)
-        tp = tp[tp[item_col].isin(itemcount.index[itemcount >= min_sc])]
+        item_count = get_count(tp, item_col)
+        items_to_keep = item_count.index[item_count >= min_uc]
+        if len(items_to_keep) < len(item_count):
+            print(f'Dropping {len(item_count) - len(items_to_keep)} of {len(item_count)} items...')
+            tp = tp[tp[item_col].isin(items_to_keep)]
 
     if min_uc > 0:
-        usercount = get_count(tp, user_col)
-        tp = tp[tp[user_col].isin(usercount.index[usercount >= min_uc])]
+        user_count = get_count(tp, user_col)
+        users_to_keep = user_count.index[user_count >= min_uc]
+        if len(users_to_keep) < len(user_count):
+            print(f'Dropping {len(user_count) - len(users_to_keep)} of {len(user_count)} users...')
+            tp = tp[tp[user_col].isin(users_to_keep)]
 
-    usercount, itemcount = get_count(tp, user_col), get_count(tp, item_col)
-    return tp, usercount, itemcount
+    user_count, item_count = get_count(tp, user_col), get_count(tp, item_col)
+    return tp, user_count, item_count
 
 
 def split_train_test_proportion(data, test_prop=0.2):
@@ -123,33 +133,39 @@ def numerize(tp, profile2id, show2id):
 if __name__ == '__main__':
 
     path = sys.argv[1] if len(sys.argv) > 1 else 'ml-20m/ratings.csv'
+    delimiter = sys.argv[2] if len(sys.argv) > 2 else None
+    has_header = bool(int(sys.argv[3])) if len(sys.argv) > 3 else True
     data_dir = os.path.dirname(path)
+
+    MIN_RATING = 3.5
+    MIN_USER_COUNT = 5
+    N_HELDOUT_USERS = 10000
+    RANDOM_SEED = 98765
 
     # Load Data
     print("Load and preprocess dataset")
-    raw_data = pd.read_csv(path, header=0)
+    raw_data = pd.read_csv(path, header=0 if has_header else None, delimiter=delimiter)
     if len(raw_data.columns) > 2:
-        user_col, item_col, rating_col = raw_data.columns
-        raw_data = raw_data[raw_data[rating_col] > 3.5]
+        user_col, item_col, rating_col = raw_data.columns[:3]
+        raw_data = raw_data[raw_data[rating_col] > MIN_RATING]
     else:
         user_col, item_col = raw_data.columns
 
     # Filter Data
-    raw_data, user_activity, item_popularity = filter_triplets(raw_data)
+    raw_data, user_activity, item_popularity = filter_triplets(raw_data, min_uc=MIN_USER_COUNT)
 
     # Shuffle User Indices
     unique_uid = user_activity.index
-    np.random.seed(98765)
+    np.random.seed(RANDOM_SEED)
     idx_perm = np.random.permutation(unique_uid.size)
     unique_uid = unique_uid[idx_perm]
 
     n_users = unique_uid.size
-    n_heldout_users = 10000
 
     # Split Train/Validation/Test User Indices
-    tr_users = unique_uid[:(n_users - n_heldout_users * 2)]
-    vd_users = unique_uid[(n_users - n_heldout_users * 2): (n_users - n_heldout_users)]
-    te_users = unique_uid[(n_users - n_heldout_users):]
+    tr_users = unique_uid[:(n_users - N_HELDOUT_USERS * 2)]
+    vd_users = unique_uid[(n_users - N_HELDOUT_USERS * 2): (n_users - N_HELDOUT_USERS)]
+    te_users = unique_uid[(n_users - N_HELDOUT_USERS):]
 
     train_plays = raw_data.loc[raw_data[user_col].isin(tr_users)]
     unique_sid = pd.unique(train_plays[item_col])

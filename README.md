@@ -8,22 +8,30 @@ It also incorporates some refactoring due to [`vae-cf-pytorch`](https://github.c
 
 ## Models
 
-- `models.slim.LinearRecommender`: SLIM [3] in its closed-form variant [2]
-- `models.skl.SKLRecommender`: a recommender class for wrapping scikit-learn classifiers
+Mostly stable implementations:
+- `models.linear.LinearRecommender`: Simple linear recommender that defaults to SLIM [3] in its closed-form variant [2]. Can be combined with several other non-gradient-based learning algorithms via its `weights_fn` argument. See also `LinearRecommenderFromFile`
+- `models.als.ALSRecommender`: simple implementation of Hu's weighted alternating least squares [4]
+- `models.skl.SKLRecommender`: a recommender class for wrapping scikit-learn classifiers 
+
+Experimental:
+- `models.als.WSLIMRecommender`: a closed-form version of SLIM with weighting as proposed in Hu's weighted ALS paper [4]
 - `models.tf.WAERecommender`: a sparse, full-rank auto-encoder, implemented in TensorFlow
+
+Baselines:
+- `models.base.PopularityRecommender`
 
 The `WAE` model performs high-dimensional regression, like SLIM [3] and EASE^R [2], but with sparse weights. It uses SGD for optimization, and additionally supports binary and categorical cross-entropy alongside SLIM's squared-error loss.
 
 ## Requirements
 
-Python 3.6, and the following packages:
+Python 3.6 and the following packages:
 ```
 numpy
 scipy
 pandas
 scikit-learn
 tensorflow==1.15
-tensorboard  # if you wish
+tensorboard  # optional
 gin-config
 ```
 
@@ -37,3 +45,6 @@ https://arxiv.org/pdf/1905.03375.pdf
 
 [3] *SLIM: Sparse Linear Methods for Top-N Recommender Systems.* Xia Ning and George Karypis, ICDM 2011
 http://glaros.dtc.umn.edu/gkhome/node/774
+
+[4] *Collaborative filtering for implicit feedback datasets.* Yifan Hu, Yehuda Koren, and Chris Volinsky,  ICDM 2008
+https://ieeexplore.ieee.org/document/4781121
