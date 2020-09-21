@@ -1,4 +1,6 @@
-
+"""
+From https://github.com/younggyoseo/vae-cf-pytorch with minor changes
+"""
 import os
 import sys
 
@@ -72,22 +74,28 @@ class DataLoader():
 
 
 def get_count(tp, id):
-    playcount_groupbyid = tp[[id]].groupby(id, as_index=False)
+    playcount_groupbyid = tp[[id]].groupby(id, as_index=True)
     count = playcount_groupbyid.size()
     return count
 
 
 def filter_triplets(tp, min_uc=5, min_sc=0):
     if min_sc > 0:
-        itemcount = get_count(tp, item_col)
-        tp = tp[tp[item_col].isin(itemcount.index[itemcount >= min_sc])]
+        item_count = get_count(tp, item_col)
+        items_to_keep = item_count.index[item_count >= min_uc]
+        if len(items_to_keep) < len(item_count):
+            print(f'Dropping {len(item_count) - len(items_to_keep)} of {len(item_count)} items...')
+            tp = tp[tp[item_col].isin(items_to_keep)]
 
     if min_uc > 0:
-        usercount = get_count(tp, user_col)
-        tp = tp[tp[user_col].isin(usercount.index[usercount >= min_uc])]
+        user_count = get_count(tp, user_col)
+        users_to_keep = user_count.index[user_count >= min_uc]
+        if len(users_to_keep) < len(user_count):
+            print(f'Dropping {len(user_count) - len(users_to_keep)} of {len(user_count)} users...')
+            tp = tp[tp[user_col].isin(users_to_keep)]
 
-    usercount, itemcount = get_count(tp, user_col), get_count(tp, item_col)
-    return tp, usercount, itemcount
+    user_count, item_count = get_count(tp, user_col), get_count(tp, item_col)
+    return tp, user_count, item_count
 
 
 def split_train_test_proportion(data, test_prop=0.2):
