@@ -11,7 +11,7 @@ from data import DataLoader
 from util import prune, save_weights, to_float32
 from preprocessing import preprocess
 from models.linear import LinearRecommenderFromFile
-from models.tf import TFRecommender, WAE
+from models.tf import TFRecommender, SparseAutoEncoder
 
 
 def test_wae_inits(tmp_path):
@@ -29,7 +29,7 @@ def test_wae_inits(tmp_path):
     save_weights(weights_path, sparse_weights=w_sp, other={'biases': b})
 
     model_np = LinearRecommenderFromFile(log_dir, path=weights_path)
-    model_tf = WAE(w_inits=[w_sp], b_inits=[b], loss='bce')
+    model_tf = SparseAutoEncoder(n_items=200, weights_path=weights_path, loss='bce')
 
     x = random(300, 200, density=0.1)
     y_np, loss = model_np.predict(x)
@@ -44,7 +44,7 @@ def test_wae_inits(tmp_path):
 
 def test_wae_experiment(tmp_path):
     """Test correspondence of evaluation metrics between a
-    1-layer WAE and a logistic regression model, initialized with the same weights.
+    1-layer SparseAutoEncoder and a logistic regression model, initialized with the same weights
 
     TODO:
     - is this only passing because both get random performance?
@@ -57,7 +57,7 @@ def test_wae_experiment(tmp_path):
     w = np.eye(200, k=1)
     b = 0.5 * np.random.randn(200)
     w_sp = prune(w, target_density=0.1)
-    save_weights(weights_path, weights=w_sp, biases=b)
+    save_weights(weights_path, sparse_weights=w_sp, other={'biases': b})
 
     # data
     x_train = random(300, 200, density=0.1)
@@ -68,26 +68,28 @@ def test_wae_experiment(tmp_path):
     config_str = f"""
     preprocess.tfidf = True
     preprocess.norm = 'l2'
+
+    TFRecommender.Model = @SparseAutoEncoder
+    SparseAutoEncoder.weights_path = '{weights_path}'
     """
     gin.parse_config(config_str)
 
     # run
-    x_train, y_train, x_val, y_val = preprocess(x_train, x_train.copy(), x_val, y_val)
-    tf_recommender = TFRecommender(log_dir=str(tmp_path / "logs_tf"),
-                                   weights_path=weights_path, n_epochs=0)
+    x_train, y_train, x_val, y_val, _, _ = preprocess(x_train, x_train.copy(), x_val, y_val)
+    tf_recommender = TFRecommender(log_dir=str(tmp_path / "logs_tf"), n_epochs=0)
     tf_metrics = tf_recommender.train(x_train, y_train, x_val, y_val)
     np_recommender = LinearRecommenderFromFile(log_dir=str(tmp_path / "logs_np"),
                                                path=weights_path)
     np_metrics = np_recommender.train(x_train, y_train, x_val, y_val)
 
-    for k in ['ndcg', 'r100']:
+    for k in ['ndcg', 'r50']:
         assert 0.0 < tf_metrics[k] < 1.0  # should be non-trivial
         assert np.allclose(tf_metrics[k], np_metrics[k])
 
 
 def compare_skl_wae_real_weights(log_dir, data_path, weights_path, cap=None):
     """Test correspondence of evaluation metrics between a
-    1-layer WAE and a logistic regression model, initialized with the same weights.
+    1-layer SparseAutoEncoder and a logistic regression model, initialized with the same weights
     """
     log_dir = Path(log_dir)
 

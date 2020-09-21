@@ -124,14 +124,14 @@ def prune_global(x, target_density=0.005, copy=True):
             return x_sp
         thr = get_pruning_threshold(x, target_density=target_density)
         try:
-            x_sp.data[np.abs(x_sp.data) <= thr] = 0.0
+            x_sp.data[np.abs(x_sp.data) < thr] = 0.0
         except AttributeError:
             x_sp = x_sp.tocsr()
-            x_sp.data[np.abs(x_sp.data) <= thr] = 0.0
+            x_sp.data[np.abs(x_sp.data) < thr] = 0.0
     else:
         x = x.copy()
         thr = get_pruning_threshold(x, target_density=target_density)
-        x[np.abs(x) <= thr] = 0.0
+        x[np.abs(x) < thr] = 0.0
         x_sp = csr_matrix(x)
     x_sp.eliminate_zeros()
 
@@ -225,7 +225,7 @@ def save_weights(path, sparse_weights, other=None):
     """
     save_npz(path, sparse_weights)
     if other:
-        data = np.load(path)
+        data = dict(np.load(path))
         data.update(other)
         np.savez(path, **data)
 

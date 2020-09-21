@@ -17,13 +17,15 @@ gin.external_configurable(tf.train.AdamOptimizer)
 @gin.configurable
 class TFRecommender(BaseRecommender):
 
-    def __init__(self, log_dir=None, batch_size=100, n_epochs=10):
+    def __init__(self, log_dir=None, Model=None, batch_size=100, n_epochs=10):
         """Build a TF-based auto-encoder model with given initial weights.
         """
-        self.model = None
         self.log_dir = log_dir
+        self.Model = Model
         self.batch_size = batch_size
         self.n_epochs = n_epochs
+        if Model is None:
+            self.Model = AutoEncoder
 
         self.logger = None
         self.sess = None
@@ -32,7 +34,7 @@ class TFRecommender(BaseRecommender):
         """Train a tensorflow recommender"""
 
         tf.reset_default_graph()
-        self.model = AutoEncoder(n_items=x_train.shape[1])
+        self.model = self.Model(n_items=x_train.shape[1])
         best_ndcg = 0.0
         with tf.compat.v1.Session() as self.sess:
             self.logger = TFLogger(self.log_dir, self.sess)
@@ -219,14 +221,15 @@ class AutoEncoder(object):
 class SparseAutoEncoder(object):
     """Autoencoder from a list of initial weights matrices. Sparse by default.
     """
-    def __init__(self, weights_path=None, n_layers=1,
+    def __init__(self, n_items, weights_path=None, n_layers=1,
                  randomize_inits=False, use_biases=True,
                  normalize_inputs=False, shared_weights=False, loss="mse",
                  keep_prob=1.0, lam=0.01, lr=3e-4, random_seed=None,
                  Optimizer=tf.train.AdamOptimizer):
-        weights, biases = load_weights_and_biases(weights_path)
+        weights, biases = load_weights_biases(weights_path)
 
         # make init from (single) weights file break if n_layers > 1 and weights not square
+        assert weights.shape[0] == n_items
         assert n_layers > 2 or weights.shape[0] == weights.shape[1]
         w_inits = [weights] * n_layers
         b_inits = [biases] * n_layers
@@ -304,11 +307,8 @@ class SparseAutoEncoder(object):
             h = tf.nn.dropout(h, rate=1-self.keep_prob_ph)
 
         for i, w in enumerate(self.weights):
-            if self.dense:
-                h = tf.matmul(h, w)
-            else:
-                h = tf.transpose(tf.sparse.sparse_dense_matmul(w, h, adjoint_a=True, adjoint_b=True))
-            
+            h = tf.transpose(tf.sparse.sparse_dense_matmul(w, h, adjoint_a=True, adjoint_b=True))
+
             if len(self.biases):
                 h = h + self.biases[i]
             if i != len(self.weights) - 1:
@@ -325,6 +325,16 @@ class SparseAutoEncoder(object):
         # tensorflow l2 regularization multiply 0.5 to the l2 norm
         # multiply 2 so that it is back in the same scale
         return 2 * reg_var
+
+    def save(self, sess, log_dir):
+        """TODO subclass AutoEncoder so we don't need this?
+        """
+        self.saver.save(sess, '{}/model'.format(log_dir))
+
+    def restore(self, sess, log_dir):
+        """TODO subclass AutoEncoder so we don't need this?
+        """
+        self.saver.restore(sess, '{}/model'.format(log_dir))
 
 
 class TFLogger(Logger):
