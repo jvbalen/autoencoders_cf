@@ -9,35 +9,44 @@ from scipy.sparse import issparse, hstack, csr_matrix
 from tqdm import tqdm
 
 from models.base import BaseRecommender
-from util import Clock, prune_global, gen_batch_inds, prune_rows
+from util import Clock, prune_global, gen_batch_inds, prune_rows, load_weights
 
 
 @gin.configurable
 class SpLoRecommender(BaseRecommender):
 
-    def __init__(self, log_dir, batch_size=100, target_density=1.0, save_weights=True,
-                 latent_dim=10, row_nnz=100, n_iter=5, l2_reg=1., uv_l2_reg=0.01,
-                 uv_updates=3, init_scale=0.1):
+    def __init__(self, log_dir, batch_size=100, weights_path=None, save_weights=True,
+                 latent_dim=200, uv_l2_reg=0.01, uv_updates=3, init_scale=0.1,
+                 update_s=True, l2_reg=100.0, row_nnz=None, target_density=1.0):
         """'Sparse + Low-rank' recommender. Models:
             X ~ U @ V.T + X @ S
         """
-        self.target_density = target_density
         self.save_weights = save_weights
         self.latent_dim = latent_dim
-        self.row_nnz = row_nnz
-        self.n_iter = n_iter
-        self.l2_reg = l2_reg
-        self.uv_updates = uv_updates
         self.uv_l2_reg = uv_l2_reg
+        self.uv_updates = uv_updates
         self.init_scale = init_scale
-        self.S = None
-        self.U = None
-        self.V = None
+        self.update_s = update_s
+        self.l2_reg = l2_reg
+        self.row_nnz = row_nnz
+        self.target_density = target_density
+
+        if weights_path:
+            self.S, other = load_weights(weights_path)
+            self.V = other['V']
+            self.U = None
+        else:
+            self.S = None
+            self.U = None
+            self.V = None
 
         super().__init__(log_dir, batch_size=batch_size)
 
     def train(self, x_train, y_train, x_val, y_val):
         """Train and evaluate
+
+        TODO: one more update for U just before S, to ensure we use the same U @ V.T as we'd have at prediction time?
+        TODO: weights W = X so that S focuses on re-ranking? Will be slower, but worth an experiment
         """
         verbose = self.logger.verbose if self.logger else False
         clock = Clock(verbose=verbose)
@@ -47,59 +56,67 @@ class SpLoRecommender(BaseRecommender):
             warn("SLIM is unsupervised, y_train will be ignored")
         n_users, n_items = x_train.shape
 
-        self.S = csr_matrix((n_items, n_items))
-        self.U = np.random.randn(n_users, self.latent_dim) * self.init_scale  # in case uv_updates = 0
-        self.V = np.random.randn(n_items, self.latent_dim) * self.init_scale
+        if self.S is None:
+            self.S = csr_matrix((n_items, n_items))
+        if self.V is None:
+            self.V = np.random.randn(n_items, self.latent_dim) * self.init_scale
+        self.U = np.zeros((n_users, self.latent_dim))  # in case uv_updates = 0
 
-        clock.interval('Evaluating')
-        self.evaluate(x_val, y_val, other_metrics={'iter': 0})
-        for iter_ in range(self.n_iter):
-            print(f'iter = {iter_}')
-
-            # update U, V
-            for _ in range(self.uv_updates):
-                clock.interval('Solving for U')
-                batches = gen_batch_inds(n_users, batch_size=self.batch_size)
-                y_batched = (x_train[inds].toarray() - x_train[inds].toarray() @ self.S for inds in batches)
-                u_batched = [solve_ols(self.V, y_batch.T, l2_reg=self.uv_l2_reg).T for y_batch in y_batched]
-                self.U = np.vstack(u_batched)
-                clock.interval('Solving for V')
-                batches = gen_batch_inds(n_items, batch_size=self.batch_size)
-                y_batched = (x_train[:, inds].toarray() - x_train @ self.S[:, inds].toarray() for inds in batches)
-                v_batched = [solve_ols(self.U, y_batch, l2_reg=self.uv_l2_reg).T for y_batch in y_batched]
-                self.V = np.vstack(v_batched)
+        # update U, V
+        for _ in range(self.uv_updates):
+            clock.interval('Solving for U')
+            batches = gen_batch_inds(n_users, batch_size=self.batch_size)
+            y_batched = (x_train[inds].toarray() - x_train[inds].toarray() @ self.S for inds in batches)
+            u_batched = [solve_ols(self.V, y_batch.T, l2_reg=self.uv_l2_reg).T for y_batch in y_batched]
+            self.U = np.vstack(u_batched)
+            clock.interval('Solving for V')
+            batches = gen_batch_inds(n_items, batch_size=self.batch_size)
+            y_batched = (x_train[:, inds].toarray() - x_train @ self.S[:, inds].toarray() for inds in batches)
+            v_batched = [solve_ols(self.U, y_batch, l2_reg=self.uv_l2_reg).T for y_batch in y_batched]
+            self.V = np.vstack(v_batched)
             clock.interval('Evaluating')
-            metrics = self.evaluate(x_val, y_val, other_metrics={'iter': iter_ + 1})
+            metrics = self.evaluate(x_val, y_val)
 
-            # update S
+        # update S
+        if self.update_s and self.row_nnz is None:
+            clock.interval('Computing XtX')
+            xtx = x_train.T @ x_train
+            clock.interval('Computing XtX^-1')
+            diag_indices = np.diag_indices(xtx.shape[0])
+            xtx_reg = xtx.copy()
+            xtx_reg[diag_indices] += self.l2_reg
+            xtx_inv = np.linalg.inv(xtx_reg.toarray())
+            clock.interval('Computing XtY')
+            xtu = x_train.T @ self.U
+            xty = xtx - xtu @ self.V.T  # y = (x - u v.T) => x.T y = x.T x - X.T u v.T
+            clock.interval('Computing XtX^-1 @ XtY')
+            b = xtx_inv @ xty
+            clock.interval('Computing S (zero-diag)')
+            self.S = b - xtx_inv * np.diag(b) / np.diag(xtx_inv)  # zero-diag, see Steck 2019
+            clock.interval('Pruning S')
+            self.S = prune_global(self.S, target_density=self.target_density).tocsc()
+        elif self.update_s:
             clock.interval('Solving for S, using sparse approximation')
-            yt = (x_col.toarray().flatten() - self.U @ v for x_col, v in zip(x_train.T, self.V))
-            self.S = solve_wols(x_train, yt, wt=np.ones(n_items), l2_reg=self.l2_reg, row_nnz=self.row_nnz).tocsc()
-            clock.interval('Evaluating')
-            metrics = self.evaluate(x_val, y_val, other_metrics={'iter': iter_ + 1})
+            yt = (x.toarray().flatten() - self.U @ v for x, v in zip(x_train.T, self.V))
+            wt = np.ones(x_train.shape[1])
+            self.S = solve_wols(x_train, yt=yt, wt=wt, l2_reg=self.l2_reg, row_nnz=self.row_nnz)
+            if self.target_density < 1.0:
+                self.S = prune_global(self.S, target_density=self.target_density)
+            self.S = self.S.tocsc()
 
-        if self.target_density < 1.0:
-            self.S = prune_global(self.S, target_density=self.target_density)
         dt = time.perf_counter() - t1
         if self.save_weights and self.logger is not None:
-            self.logger.save_weights(self.S, other={'U': self.U, 'V': self.V})
+            self.logger.save_weights(self.S, other={'V': self.V})
 
         density = self.S.size / np.prod(self.S.shape)
         metrics = self.evaluate(x_val, y_val, other_metrics={'train_time': dt, 'weight_density': density})
 
         return metrics
 
-    def get_weights(self, x):
-
-        if self.alpha == 0:
-            return None
-
-        return (1.0 + x_col.toarray().flatten() * self.alpha for x_col in x.T)
-
     def predict(self, x, y=None,):
         """Predict scores
         """
-        u = solve_ols(self.V, x.T, l2_reg=self.uv_l2_reg).T
+        u = solve_ols(self.V, x.toarray().T, l2_reg=self.uv_l2_reg).T
         y_pred = x @ self.S + u @ self.V.T
 
         return y_pred, np.nan
@@ -233,13 +250,13 @@ def solve_ols(x, y, l2_reg=100., zero_diag=False, verbose=False):
     return b
 
 
-def solve_wols(x, yt, wt, l2_reg=100, row_nnz=None, verbose=False):
+def solve_wols(x, yt, wt, l2_reg=100, row_nnz=None, verbose=False, n_steps=None):
     """Solve the weighted Ordinary Least Squares problem:
-        argmin_B W * |X B - Y|^2
+        argmin_B | W * (X B - Y) |^2
     where * denotes element-wise multiplication
 
     Or equivalently, compute for each column y_i of Y:
-        argmin_b_i W_i |X b_i - y_i|^2 + reg
+        argmin_b_i | W_i (X b_i - y_i) |^2 + reg
     where W_i := diagM(W[:, i]) a diagonal matrix,
     using the closed-form solution
         b_i = (X.T W_i X + l2_reg * I) X.T W_i y
@@ -248,15 +265,18 @@ def solve_wols(x, yt, wt, l2_reg=100, row_nnz=None, verbose=False):
     these may be a passed as a generator, so that (possibly dense)
     weights and targets can be computed on the fly, saving memory.
 
-    If `row_nnz` is specified, use the gram-matrix to get neighbors
-    for each item i and constrain b_i to zero everywhere except in
-    the positions given by neighbors_i---allowing for a drastic
-    reduction in compute when n_cols(Y) >> 1
+    If `row_nnz` is specified, use simple features selection to
+    get 'neighbors' for each item i and constrain b_i to zero
+    everywhere except in the positions given by neighbors_i---
+    allowing for a big reduction in compute when Y has many cols
+    If `row_nnz`, also exclude feature x_i when learning y_i,
+    as common in SLIM and EASE^R (zero-diagonal constraint).
     """
-    try:
-        n_steps = yt.shape[0]  # get number of items from Y.T
-    except AttributeError:
-        n_steps = len(wt)  # if Y.T is a generator, try W.T
+    if n_steps is None:
+        try:
+            n_steps = yt.shape[0]  # get number of items from Y.T
+        except AttributeError:
+            n_steps = len(wt)  # if Y.T is a generator, try W.T
 
     B_list = []
     for i, (wt_i, yt_i) in tqdm(enumerate(zip(wt, yt)), total=n_steps):
@@ -268,11 +288,11 @@ def solve_wols(x, yt, wt, l2_reg=100, row_nnz=None, verbose=False):
             xtx = gram_matrix(x, wt_i)
         else:
             # limit cols of x to row_nnz "neighbors" based on x.T @ w @ y
-            est_feature_relevance = np.abs(xty)
-            est_feature_relevance[i] = 0.0  # zero-diag (TODO: makes less sense for U, V?)
-            feature_selection = np.argpartition(est_feature_relevance, kth=-row_nnz)[-row_nnz:]
-            xtx = gram_matrix(x[:, feature_selection], w=wt_i)
-            xty = xty[feature_selection]
+            feat_relevance = np.abs(xty)
+            feat_relevance[i] = 0.0  # zero-diag (NOTE: only makes sense for learning similarities)
+            feat_selection = np.argpartition(feat_relevance, kth=-row_nnz)[-row_nnz:]
+            xtx = gram_matrix(x[:, feat_selection], w=wt_i)
+            xty = xty[feat_selection]
         if issparse(xtx):
             xtx = xtx.toarray()
 
@@ -282,7 +302,7 @@ def solve_wols(x, yt, wt, l2_reg=100, row_nnz=None, verbose=False):
         b = xtx_inv @ xty
 
         if row_nnz is not None:
-            ii, jj = feature_selection, np.zeros_like(feature_selection)
+            ii, jj = feat_selection, np.zeros_like(feat_selection)
             b = csr_matrix((b, (ii, jj)), shape=(x.shape[1], 1))
         B_list.append(b)
 
