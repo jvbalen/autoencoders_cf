@@ -11,7 +11,7 @@ from scipy.sparse import csr_matrix, csc_matrix, coo_matrix, issparse, eye, vsta
 
 from models.base import BaseRecommender
 
-from util import Clock, Node, load_weights_biases, prune, prune_global, prune_rows, gen_batches
+from util import Clock, Node, load_weights_biases, prune, prune_global, prune_rows, add_submatrix, gen_batches
 
 
 @gin.configurable
@@ -27,6 +27,14 @@ class LinearRecommender(BaseRecommender):
         [3] Xia Ning and George Karypis, SLIM: Sparse Linear Methods for
         Top-N Recommender Systems. ICDM 2011
         http://glaros.dtc.umn.edu/gkhome/node/774
+
+        Params:
+        - log_dir (str): logging directory
+        - weights_fn (function): function to compute an item x item weights matrix from x_train,
+            defaults to `closed_form_slim`
+        - target_density (float): if < 1.0, prune weights matrix at the end of training
+        - batch_size (int): prediction batch size
+        - save_weights (bool): save weights to `log_dir`
         """
         self.weights_fn = weights_fn
         self.target_density = target_density
@@ -69,6 +77,17 @@ class EmbeddingRecommender(BaseRecommender):
     def __init__(self, log_dir, embedding_fn=None, item_nnz=None, user_nnz=None, batch_size=100,
                  save_embeddings=True):
         """Embedding recommender.
+
+        Params:
+        - log_dir (str): logging directory
+        - embedding_fn (function): function to computes (1 or 2) item x d embeddings matrices
+            from x_train, defaults to `cholesky_embeddings`
+        - item_nnz (float): if not None, prune embeddings to this many nonzeros per item
+            after training
+        - user_nnz (float): if not None, prune user embeddings to this many nonzeros per user,
+            (prediction time only)
+        - batch_size (int): prediction batch size
+        - save_weights (bool): save weights to `log_dir`
         """
         self.embedding_fn = embedding_fn
         self.item_nnz = item_nnz
@@ -126,6 +145,12 @@ class LinearRecommenderFromFile(BaseRecommender):
 
         Given a file containing 2d weights and optional 1d biases,
         predict item scores.
+
+        Params:
+        - log_dir (str): logging directory
+        - path (str): path to npz file containing item x item weights and optional biases,
+            see `load_weights_biases` for format
+        - batch_size (int): prediction batch size
         """
         weights, biases = load_weights_biases(path)
         if biases is None:
@@ -749,33 +774,6 @@ def gen_branches_from_tree(tree, max_len=1000, verbose=False):
             node = node.children[largest]
             if verbose:
                 print(f'-> subtrees too big, moving into subtree {largest+1} of {node.n_children}')
-
-
-def add_submatrix(A, dA, where=None, target_density=1.0, max_density=None, verbose=True):
-    """Add submatrix `sub` to `A` at indices `where = (rows, cols)`.
-    Optionally prune the result down to density `target_density`
-    """
-    if max_density is None:
-        max_density = 3 * target_density
-    max_nnz = max_density * np.prod(A.shape)
-    if A.nnz >= max_nnz and dA.size > max_nnz:
-        # if A is already capacity, pre-emptively drop elements of dA < A[A > 0].abs.min
-        thr = np.min(np.abs(A.data[np.abs(A.data) > 0]))
-        dA[np.abs(dA) < thr] = 0.0
-    if where is not None:
-        dA = coo_matrix(dA)
-        rows, cols = where
-        rows = dA.row if rows is None else rows[dA.row]
-        cols = dA.col if cols is None else cols[dA.col]
-        dA = csr_matrix((dA.data, (rows, cols)), shape=A.shape)
-    dA.eliminate_zeros()
-    A += dA
-    if A.nnz > max_density * np.prod(A.shape):
-        if verbose:
-            print(f'  density > max_density: pruning result')
-        A = prune_global(A, target_density=target_density, copy=False)
-
-    return A
 
 
 def drop_empty_cols(X):

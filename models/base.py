@@ -12,7 +12,12 @@ from util import Logger, gen_batches, prune
 class BaseRecommender(object):
 
     def __init__(self, log_dir, batch_size=100):
-        """Generic recommender."""
+        """Generic recommender.
+        
+        Params:
+        - log_dir (str): logging directory
+        - batch_size (int): prediction batch size
+        """
         self.logger = Logger(log_dir) if log_dir else None
         self.batch_size = batch_size
 
@@ -62,8 +67,13 @@ class BaseRecommender(object):
 class PopularityRecommender(BaseRecommender):
 
     def __init__(self, log_dir, batch_size=100, nnz=100):
-        """Popularity recommender."""
+        """Popularity recommender.
 
+        Params:
+        - log_dir (str): logging directory
+        - batch_size (int): prediction batch size
+        - nnz (int): number of top items to keep
+        """
         self.logger = Logger(log_dir) if log_dir else None
         self.batch_size = batch_size
         self.popularity = None

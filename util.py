@@ -4,7 +4,7 @@ import time
 import datetime
 
 import numpy as np
-from scipy.sparse import csr_matrix, issparse, vstack, save_npz, load_npz
+from scipy.sparse import csr_matrix, coo_matrix, issparse, vstack, save_npz, load_npz
 from tqdm import tqdm
 
 
@@ -228,6 +228,33 @@ def save_weights(path, sparse_weights, other=None):
         data = np.load(path)
         data.update(other)
         np.savez(path, **data)
+
+
+def add_submatrix(A, dA, where=None, target_density=1.0, max_density=None, verbose=True):
+    """Add submatrix `sub` to `A` at indices `where = (rows, cols)`.
+    Optionally prune the result down to density `target_density`
+    """
+    if max_density is None:
+        max_density = 3 * target_density
+    max_nnz = max_density * np.prod(A.shape)
+    if A.nnz >= max_nnz and dA.size > max_nnz:
+        # if A is already capacity, pre-emptively drop elements of dA < A[A > 0].abs.min
+        thr = np.min(np.abs(A.data[np.abs(A.data) > 0]))
+        dA[np.abs(dA) < thr] = 0.0
+    if where is not None:
+        dA = coo_matrix(dA)
+        rows, cols = where
+        rows = dA.row if rows is None else rows[dA.row]
+        cols = dA.col if cols is None else cols[dA.col]
+        dA = csr_matrix((dA.data, (rows, cols)), shape=A.shape)
+    dA.eliminate_zeros()
+    A += dA
+    if A.nnz > max_density * np.prod(A.shape):
+        if verbose:
+            print(f'  density > max_density: pruning result')
+        A = prune_global(A, target_density=target_density, copy=False)
+
+    return A
 
 
 def load_weights(path):
