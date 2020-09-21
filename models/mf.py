@@ -25,7 +25,7 @@ from scipy.special import expit
 from scipy.sparse import csr_matrix, vstack, issparse, eye, find
 
 from models.base import BaseRecommender
-from models.slim import LinearRecommender, batched_gramm, closed_form_slim, add_submatrix
+from models.linear import LinearRecommender, batched_gramm, closed_form_slim, add_submatrix
 from util import Clock, gen_batches, gen_batch_inds, prune_global, prune_rows
 from metric import binary_crossentropy_from_logits
 

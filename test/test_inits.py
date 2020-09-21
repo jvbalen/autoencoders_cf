@@ -10,7 +10,7 @@ from scipy.sparse import random
 from data import DataLoader
 from util import prune, save_weights, to_float32
 from preprocessing import preprocess
-from models.slim import LinearRecommenderFromFile
+from models.linear import LinearRecommenderFromFile
 from models.tf import TFRecommender, WAE
 
 
