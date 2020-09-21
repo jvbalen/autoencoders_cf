@@ -22,6 +22,23 @@ Baselines:
 
 The `WAE` model performs high-dimensional regression, like SLIM [3] and EASE^R [2], but with sparse weights. It uses SGD for optimization, and additionally supports binary and categorical cross-entropy alongside SLIM's squared-error loss.
 
+## Configuration
+
+This code supports [`gin-config`](https://github.com/google/gin-config/) for configuring experiments.
+
+For example, you can use the following config to run an experiment with the `LinearRecommender`, since the recommender, as well as the `closed_form_slim` were made configurable:
+```{python}
+experiment.Recommender = @LinearRecommender
+LinearRecommender.weights_fn = @closed_form_slim
+LinearRecommender.target_density = 0.01
+closed_form_slim.l2_reg = 100.0
+```
+
+With the above saved to `config/slim.gin`, an experiment may look like this:
+```{bash}
+python run.py --data ~/data/ml-20m --logdir ~/experiments/ml-20m --config config/slim.gin
+```
+
 ## Requirements
 
 Python 3.6 and the following packages:
