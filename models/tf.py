@@ -84,7 +84,9 @@ class TFRecommender(BaseRecommender):
     def prepare_batch(self, x, y=None):
         """Convert a batch of x and y to a sess.run-compatible format"""
         x = to_float32(x, to_dense=True)
-        if y is not None:
+        if y is None:
+            y = to_float32(x, to_dense=True)
+        else:
             y = to_float32(y, to_dense=True)
 
         return x, y
@@ -225,7 +227,7 @@ class SparseAutoEncoder(object):
                  randomize_inits=False, use_biases=True,
                  normalize_inputs=False, shared_weights=False, loss="mse",
                  keep_prob=1.0, lam=0.01, lr=3e-4, random_seed=None,
-                 Optimizer=tf.train.AdamOptimizer):
+                 init_alpha=None, Optimizer=tf.train.AdamOptimizer):
         weights, biases = load_weights_biases(weights_path)
 
         # make init from (single) weights file break if n_layers > 1 and weights not square
@@ -244,6 +246,8 @@ class SparseAutoEncoder(object):
         self.lam = lam
         self.lr = lr
         self.random_seed = random_seed
+        self.init_b = 0. if init_alpha is None else - np.log(1. / init_alpha - 1.)
+        self.init_a = 1. if init_alpha is None else - np.log(1. / (1. - init_alpha) - 1.) - self.init_b
 
         # loss
         loss_functions = {"mse": mse,
@@ -279,6 +283,7 @@ class SparseAutoEncoder(object):
         for i, (w_init, b_init) in enumerate(zip(self.w_inits, self.b_inits)):
             weight_key = "weight_{}to{}".format(i, i+1)
             bias_key = "bias_{}".format(i+1)
+            w_init *= self.init_a
             if i == 0 or not self.shared_weights:
                 w = sparse_tensor_from_init(w_init, randomize=self.randomize_inits,
                                             zero_diag=True, name=weight_key)
@@ -290,7 +295,8 @@ class SparseAutoEncoder(object):
                 else:
                     if self.randomize_inits:
                         b_init = mul_noise(b_init)
-                    b = tf.Variable(b_init.astype(np.float32), name=bias_key)
+                b_init += self.init_b
+                b = tf.Variable(b_init.astype(np.float32), name=bias_key)
                 tf.compat.v1.summary.histogram(bias_key, b)
                 biases.append(b)
 

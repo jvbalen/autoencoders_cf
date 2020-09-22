@@ -1,0 +1,14 @@
+
+experiment.Recommender = @TFRecommender
+
+TFRecommender.Model = @SparseAutoEncoder
+TFRecommender.n_epochs = 1
+TFRecommender.batch_size = 500
+
+SparseAutoEncoder.weights_path = '/Users/jan/experiments/wsdm/msd/20200804-122337_weights.npz'
+SparseAutoEncoder.normalize_inputs = False
+SparseAutoEncoder.keep_prob = 1.0
+SparseAutoEncoder.lam = 0.0
+SparseAutoEncoder.lr = 3e-4
+SparseAutoEncoder.init_alpha = None  # scale inits
+SparseAutoEncoder.loss = "bce"
