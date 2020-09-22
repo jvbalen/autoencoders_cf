@@ -5,7 +5,6 @@ from models.distill import DistilledRecommender
 from models.mf import UserFactorRecommender, LogisticMFRecommender
 from models.base import PopularityRecommender
 from models.als import SpLoRecommender, ALSRecommender, WSLIMRecommender
-from models.boost import BoostedBlockSLIM
 
 __all__ = ['LinearRecommender', 'LinearRecommenderFromFile',
            'SKLRecommender',
@@ -13,5 +12,4 @@ __all__ = ['LinearRecommender', 'LinearRecommenderFromFile',
            'DistilledRecommender',
            'UserFactorRecommender', 'LogisticMFRecommender',
            'PopularityRecommender',
-           'SpLoRecommender', 'ALSRecommender', 'WSLIMRecommender',
-           'BoostedBlockSLIM']
+           'SpLoRecommender', 'ALSRecommender', 'WSLIMRecommender']
