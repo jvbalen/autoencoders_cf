@@ -205,9 +205,7 @@ class AutoEncoder(object):
     def reg_term(self):
 
         # apply regularization to weights
-        reg_var = 0
-        for w in self.weights + self.biases:
-            reg_var += self.lam * tf.nn.l2_loss(w)
+        reg_var = self.lam * tf.add_n([tf.nn.l2_loss(w) for w in self.weights + self.biases])
         # reg = l2_regularizer(self.lam)
         # reg_var = apply_regularization(reg, self.weights + self.biases)
 
@@ -330,9 +328,7 @@ class SparseAutoEncoder(object):
     def reg_term(self):
 
         # apply regularization to weights
-        reg_var = 0
-        for w in [w.values for w in self.weights] + self.biases:
-            reg_var += self.lam * tf.nn.l2_loss(w)
+        reg_var = self.lam * tf.add_n([tf.nn.l2_loss(w) for w in [w.values for w in self.weights] + self.biases])
         # reg = l2_regularizer(self.lam)
         # reg_var = apply_regularization(reg, [w.values for w in self.weights] + self.biases)
 
