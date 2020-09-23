@@ -116,7 +116,7 @@ class AutoEncoder(object):
     def __init__(self, n_items, n_layers=2, latent_dim=100, use_biases=True,
                  normalize_inputs=False, tanh=True, loss="nll",
                  keep_prob=0.5, lam=0.01, lr=3e-4, random_seed=None,
-                 Optimizer=tf.train.AdamOptimizer):
+                 Optimizer=tf.compat.v1.train.AdamOptimizer):
 
         self.n_items = n_items
         self.n_layers = n_layers
@@ -230,7 +230,7 @@ class SparseAutoEncoder(object):
                  randomize_inits=False, use_biases=True,
                  normalize_inputs=False, shared_weights=False, loss="mse",
                  keep_prob=1.0, lam=0.01, lr=3e-4, random_seed=None,
-                 init_alpha=None, Optimizer=tf.train.AdamOptimizer):
+                 init_alpha=None, Optimizer=tf.compat.v1.train.AdamOptimizer):
         weights, biases = load_weights_biases(weights_path)
 
         # make init from (single) weights file break if n_layers > 1 and weights not square
