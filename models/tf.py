@@ -370,17 +370,17 @@ class TFLogger(Logger):
         if test:
             return  # don't log test metrics to tensorboard
 
-        feed_dict = {}
-        summaries = []
-        for name, value in metrics.items():
-            if name not in self.variables:
-                self.variables[name] = tf.Variable(0.0, name=name)
-                self.summaries[name] = tf.compat.v1.summary.scalar(name, self.variables[name])
-            summaries.append(self.summaries[name])
-            feed_dict[self.variables[name]] = value
-        summaries = self.sess.run(summaries, feed_dict=feed_dict)
-        summaries_dict = dict(zip(metrics.keys(), summaries))
-        self.log_summaries(summaries_dict)
+        # feed_dict = {}
+        # summaries = []
+        # for name, value in metrics.items():
+        #     if name not in self.variables:
+        #         self.variables[name] = tf.compat.v1.Variable(0.0, name=name)
+        #         self.summaries[name] = tf.compat.v1.summary.scalar(name, self.variables[name])
+        #     feed_dict[self.variables[name]] = value
+        #     summaries.append(self.summaries[name])
+        # summaries = self.sess.run(summaries, feed_dict=feed_dict)
+        # summaries_dict = dict(zip(metrics.keys(), summaries))
+        # self.log_summaries(summaries_dict)
 
     def log_summaries(self, summaries, step=None):
 
