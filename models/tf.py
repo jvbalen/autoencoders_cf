@@ -13,6 +13,8 @@ from util import Logger, load_weights_biases, gen_batches, to_float32
 gin.external_configurable(tf.compat.v1.train.GradientDescentOptimizer)
 gin.external_configurable(tf.compat.v1.train.AdamOptimizer)
 
+tf.compat.v1.disable_eager_execution()
+
 
 @gin.configurable
 class TFRecommender(BaseRecommender):
