@@ -10,8 +10,8 @@ from tensorflow.contrib.layers import apply_regularization, l2_regularizer
 from models.base import BaseRecommender
 from util import Logger, load_weights_biases, gen_batches, to_float32
 
-gin.external_configurable(tf.train.GradientDescentOptimizer)
-gin.external_configurable(tf.train.AdamOptimizer)
+gin.external_configurable(tf.compat.v1.train.GradientDescentOptimizer)
+gin.external_configurable(tf.compat.v1.train.AdamOptimizer)
 
 
 @gin.configurable
@@ -33,7 +33,7 @@ class TFRecommender(BaseRecommender):
     def train(self, x_train, y_train, x_val, y_val):
         """Train a tensorflow recommender"""
 
-        tf.reset_default_graph()
+        tf.compat.v1.reset_default_graph()
         self.model = self.Model(n_items=x_train.shape[1])
         best_ndcg = 0.0
         with tf.compat.v1.Session() as self.sess:
@@ -138,9 +138,9 @@ class AutoEncoder(object):
         loss_fn = loss_functions[self.loss]
 
         # placeholders and weights
-        self.input_ph = tf.placeholder(dtype=tf.float32, shape=[None, n_items])
-        self.label_ph = tf.placeholder(dtype=tf.float32, shape=[None, n_items])
-        self.keep_prob_ph = tf.placeholder_with_default(keep_prob, shape=None)
+        self.input_ph = tf.compat.v1.placeholder(dtype=tf.float32, shape=[None, n_items])
+        self.label_ph = tf.compat.v1.placeholder(dtype=tf.float32, shape=[None, n_items])
+        self.keep_prob_ph = tf.compat.v1.placeholder_with_default(keep_prob, shape=None)
         self.weights, self.biases = self.construct_weights()
 
         # build graph
@@ -203,8 +203,11 @@ class AutoEncoder(object):
     def reg_term(self):
 
         # apply regularization to weights
-        reg = l2_regularizer(self.lam)
-        reg_var = apply_regularization(reg, self.weights + self.biases)
+        reg_var = 0
+        for w in self.weights + self.biases:
+            reg_var += self.lam * tf.nn.l2_loss(w)
+        # reg = l2_regularizer(self.lam)
+        # reg_var = apply_regularization(reg, self.weights + self.biases)
 
         # tensorflow l2 regularization multiply 0.5 to the l2 norm
         # multiply 2 so that it is back in the same scale
@@ -258,9 +261,9 @@ class SparseAutoEncoder(object):
         loss_fn = loss_functions[self.loss]
 
         # placeholders and weights
-        self.input_ph = tf.placeholder(dtype=tf.float32, shape=[None, w_inits[0].shape[1]])
-        self.label_ph = tf.placeholder(dtype=tf.float32, shape=[None, w_inits[0].shape[1]])
-        self.keep_prob_ph = tf.placeholder_with_default(keep_prob, shape=None)
+        self.input_ph = tf.compat.v1.placeholder(dtype=tf.float32, shape=[None, w_inits[0].shape[1]])
+        self.label_ph = tf.compat.v1.placeholder(dtype=tf.float32, shape=[None, w_inits[0].shape[1]])
+        self.keep_prob_ph = tf.compat.v1.placeholder_with_default(keep_prob, shape=None)
         self.weights, self.biases = self.construct_weights()
 
         # build graph
@@ -325,8 +328,11 @@ class SparseAutoEncoder(object):
     def reg_term(self):
 
         # apply regularization to weights
-        reg = l2_regularizer(self.lam)
-        reg_var = apply_regularization(reg, [w.values for w in self.weights] + self.biases)
+        reg_var = 0
+        for w in [w.values for w in self.weights] + self.biases:
+            reg_var += self.lam * tf.nn.l2_loss(w)
+        # reg = l2_regularizer(self.lam)
+        # reg_var = apply_regularization(reg, [w.values for w in self.weights] + self.biases)
 
         # tensorflow l2 regularization multiply 0.5 to the l2 norm
         # multiply 2 so that it is back in the same scale
