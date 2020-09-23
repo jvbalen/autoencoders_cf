@@ -5,7 +5,7 @@ import gin
 import numpy as np
 
 import tensorflow as tf
-from tensorflow.contrib.layers import apply_regularization, l2_regularizer
+# from tensorflow.contrib.layers import apply_regularization, l2_regularizer
 
 from models.base import BaseRecommender
 from util import Logger, load_weights_biases, gen_batches, to_float32
