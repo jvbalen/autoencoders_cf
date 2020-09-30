@@ -8,7 +8,7 @@ import tensorflow as tf
 # from tensorflow.contrib.layers import apply_regularization, l2_regularizer
 
 from models.base import BaseRecommender
-from models.fb_slim import PairwiseSLIM
+from models.pairwise import PairwiseSLIM
 from util import Logger, load_weights_biases, gen_batches, to_float32
 
 gin.external_configurable(tf.compat.v1.train.GradientDescentOptimizer)
