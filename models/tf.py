@@ -8,6 +8,7 @@ import tensorflow as tf
 # from tensorflow.contrib.layers import apply_regularization, l2_regularizer
 
 from models.base import BaseRecommender
+from models.fb_slim import PairwiseSLIM
 from util import Logger, load_weights_biases, gen_batches, to_float32
 
 gin.external_configurable(tf.compat.v1.train.GradientDescentOptimizer)
@@ -19,12 +20,13 @@ tf.compat.v1.disable_eager_execution()
 @gin.configurable
 class TFRecommender(BaseRecommender):
 
-    def __init__(self, log_dir=None, Model=None, batch_size=100, n_epochs=10):
+    def __init__(self, log_dir=None, Model=None, batch_size=100, exact_batches=False, n_epochs=10):
         """Build a TF-based auto-encoder model with given initial weights.
         """
         self.log_dir = log_dir
         self.Model = Model
         self.batch_size = batch_size
+        self.exact_batches = exact_batches
         self.n_epochs = n_epochs
         if Model is None:
             self.Model = AutoEncoder
@@ -61,25 +63,19 @@ class TFRecommender(BaseRecommender):
 
     def train_one_epoch(self, x_train, y_train, x_val=None, y_val=None,
                         print_interval=1):
-        for x, y in gen_batches(x_train, y_train, batch_size=self.batch_size):
+        for x, y in gen_batches(x_train, y_train, batch_size=self.batch_size, exact=self.exact_batches):
             x, y = self.prepare_batch(x, y)
             feed_dict = {self.model.input_ph: x, self.model.label_ph: y}
-            summary_train, _ = self.sess.run([self.model.summaries, self.model.train_op],
-                                             feed_dict=feed_dict)
-            self.logger.log_summaries({'summary': summary_train})
+            _, train_loss = self.sess.run([self.model.train_op, self.model.loss], feed_dict=feed_dict)
+            self.logger.log_to_tensorboard({'train_loss': train_loss})
 
     def predict(self, x, y=None):
         """Predict scores.
         If y is not None, also return a loss.
         """
         x, y = self.prepare_batch(x, y)
-        if y is not None:
-            feed_dict = {self.model.input_ph: x, self.model.label_ph: y, self.model.keep_prob_ph: 1.0}
-            y_pred, loss = self.sess.run([self.model.logits, self.model.loss], feed_dict=feed_dict)
-        else:
-            feed_dict = {self.model.input_ph: x, self.model.keep_prob_ph: 1.0}
-            y_pred = self.sess.run(self.model.logits, feed_dict=feed_dict)
-            loss = None
+        feed_dict = {self.model.input_ph: x, self.model.label_ph: y, self.model.keep_prob_ph: 1.0}
+        y_pred, loss = self.sess.run([self.model.logits, self.model.loss], feed_dict=feed_dict)
 
         return y_pred, loss
 
@@ -151,10 +147,6 @@ class AutoEncoder(object):
             loss_fn(labels=self.label_ph, logits=self.logits)) + self.reg_term()
         self.train_op = Optimizer(self.lr).minimize(self.loss)
         self.saver = tf.compat.v1.train.Saver()
-
-        # add summary statistics
-        tf.compat.v1.summary.scalar('loss', self.loss)
-        self.summaries = tf.compat.v1.summary.merge_all()
 
     def construct_weights(self):
 
@@ -273,10 +265,6 @@ class SparseAutoEncoder(object):
         self.train_op = Optimizer(self.lr).minimize(self.loss)
         self.saver = tf.compat.v1.train.Saver()
 
-        # add summary statistics
-        tf.compat.v1.summary.scalar('loss', self.loss)
-        self.summaries = tf.compat.v1.summary.merge_all()
-
     def construct_weights(self):
 
         weights = []
@@ -327,13 +315,8 @@ class SparseAutoEncoder(object):
 
     def reg_term(self):
 
-        # apply regularization to weights
-        reg_var = self.lam * tf.add_n([tf.nn.l2_loss(w) for w in [w.values for w in self.weights] + self.biases])
-        # reg = l2_regularizer(self.lam)
-        # reg_var = apply_regularization(reg, [w.values for w in self.weights] + self.biases)
+        reg_var = self.lam * tf.add_n([tf.nn.l2_loss(w) for w in [w.values for w in self.weights] + [self.biases]])
 
-        # tensorflow l2 regularization multiply 0.5 to the l2 norm
-        # multiply 2 so that it is back in the same scale
         return 2 * reg_var
 
     def save(self, sess, log_dir):
@@ -363,28 +346,27 @@ class TFLogger(Logger):
         """Log a dictionary of metrics to a tf.compat.v1.summary.FileWriter
         """
         super().log_metrics(metrics, config=config, test=test)
-        if test:
-            return  # don't log test metrics to tensorboard
+        if not test:
+            self.log_to_tensorboard(metrics)
 
-        # feed_dict = {}
-        # summaries = []
-        # for name, value in metrics.items():
-        #     if name not in self.variables:
-        #         self.variables[name] = tf.compat.v1.Variable(0.0, name=name)
-        #         self.summaries[name] = tf.compat.v1.summary.scalar(name, self.variables[name])
-        #     feed_dict[self.variables[name]] = value
-        #     summaries.append(self.summaries[name])
-        # summaries = self.sess.run(summaries, feed_dict=feed_dict)
-        # summaries_dict = dict(zip(metrics.keys(), summaries))
-        # self.log_summaries(summaries_dict)
+    def log_to_tensorboard(self, metrics, step=None):
 
-    def log_summaries(self, summaries, step=None):
-
-        for name, summary in summaries.items():
-            self.history[name].append(summary)
-            if step is None:
-                step = len(self.history[name])
-            self.summary_writer.add_summary(summary, global_step=step)
+        feed_dict = {}
+        summaries = []
+        with tf.compat.v1.get_default_graph().as_default():
+            for name, value in metrics.items():
+                if name not in self.variables:
+                    self.variables[name] = tf.Variable(0.0, name=name)
+                    self.summaries[name] = tf.compat.v1.summary.scalar(name, self.variables[name])
+                    self.sess.run(tf.compat.v1.variables_initializer([self.variables[name]]))
+                summaries.append(self.summaries[name])
+                feed_dict[self.variables[name]] = value
+            summaries = self.sess.run(summaries, feed_dict=feed_dict)
+            for name, summary in zip(metrics.keys(), summaries):
+                self.history[name].append(summary)
+                if step is None:
+                    step = len(self.history[name])
+                self.summary_writer.add_summary(summary, global_step=step)
 
 
 def sparse_tensor_from_init(init, sparse=True, name='sparse_weight', randomize=False, zero_diag=False):
