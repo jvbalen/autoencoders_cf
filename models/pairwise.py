@@ -84,7 +84,8 @@ class PairwiseSLIM(object):
         y_neg = tf.gather(logits, neg, batch_dims=-1)
 
         # log loss over pairs, ~ a soft relu of y_neg - y_pos
-        pairwise_losses = tf.math.log(1 + tf.math.exp(y_neg - y_pos))
+        # pairwise_losses = tf.math.log(1 + tf.math.exp(y_neg - y_pos))
+        pairwise_losses = tf.nn.l2_loss(1 - (y_pos - y_neg))  # TODO: revert (experiment)
         losses = tf.reduce_sum(pairwise_losses, axis=1)
 
         return tf.reduce_mean(losses)
