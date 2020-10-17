@@ -176,7 +176,7 @@ class ALSRecommender(BaseRecommender):
 class WSLIMRecommender(BaseRecommender):
 
     def __init__(self, log_dir, batch_size=100, target_density=1.0, save_weights=True,
-                 row_nnz=100, l2_reg=5, alpha=10.):
+                 row_nnz=100, l2_reg=5, alpha=10., beta=1.0):
         """'Sparse + Low-rank' recommender. Models:
             X ~ U @ V.T + X @ S
         """
@@ -185,6 +185,7 @@ class WSLIMRecommender(BaseRecommender):
         self.row_nnz = row_nnz
         self.l2_reg = l2_reg
         self.alpha = alpha
+        self.beta = beta
         self.S = None
 
         super().__init__(log_dir, batch_size=batch_size)
@@ -199,7 +200,7 @@ class WSLIMRecommender(BaseRecommender):
         t1 = time.perf_counter()
 
         clock.interval('Solving for S, using sparse approximation')
-        wt = (1.0 + x_col.toarray().flatten() * self.alpha for x_col in x_train.T)
+        wt = (self.beta + x_col.toarray().flatten() * self.alpha for x_col in x_train.T)
         self.S = solve_wols(x_train, yt=x_train.T, wt=wt, l2_reg=self.l2_reg, row_nnz=self.row_nnz)
 
         if self.target_density < 1.0:
