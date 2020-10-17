@@ -1,0 +1,14 @@
+
+experiment.Recommender = @TFRecommender
+
+TFRecommender.Model = @MaskedAutoencoder
+TFRecommender.n_epochs = 80
+
+# PairwiseSLIM.weights_path = '/Users/jan/experiments/wsdm/msd/20200804-122337_weights.npz'
+MaskedAutoencoder.training_method = 'prune'
+MaskedAutoencoder.keep_prob = 0.5
+MaskedAutoencoder.l2_reg = 0.0
+
+sparse_optimizer.lr = 3e-4
+sparse_optimizer.end_sparsity = 0.98
+sparse_optimizer.prune_step = 50000
