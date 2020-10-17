@@ -11,6 +11,7 @@ def neg_ll(logits, labels):
 def pairwise_loss(logits, labels, n_pairs=100, logistic=True, margin=1.0,
                   clip_labels=False, binarize_labels=False):
     """Pairwise loss from logits
+    TODO: fix bug where we get a NaN (very rare)
     """
     if clip_labels:
         labels = tf.minimum(tf.maximum(0., labels), 1.0)
