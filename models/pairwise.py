@@ -15,7 +15,7 @@ class PairwiseSLIM(object):
     - track train loss, somehow, to know if we're overfitting
     - different loss functions over the pairs e.g.
         relu(neg - pos)
-        (neg - pos) ** 2
+        (neg - pos - M) ** 2
     """
     def __init__(self, batch_size, n_items, weights_path=None, zero_diag=True, row_nnz=100,
                  n_hist=100, keep_prob=1.0, lam=0.01, lr=3e-4, random_seed=None,
@@ -84,10 +84,10 @@ class PairwiseSLIM(object):
         y_neg = tf.gather(logits, neg, batch_dims=-1)
 
         # log loss over pairs, ~ a soft relu of y_neg - y_pos
-        # pairwise_losses = tf.math.log(1 + tf.math.exp(y_neg - y_pos))
-        # losses = tf.reduce_sum(pairwise_losses, axis=1)
-        # loss = tf.reduce_mean(losses)
-        loss = tf.nn.l2_loss(1 - (y_pos - y_neg))  # TODO: revert (experiment)
+        pairwise_losses = tf.math.log(1 + tf.math.exp(y_neg - y_pos))
+        losses = tf.reduce_sum(pairwise_losses, axis=1)
+        loss = tf.reduce_mean(losses)
+        # loss = tf.nn.l2_loss(1 - (y_pos - y_neg))
 
         return loss
 
