@@ -9,7 +9,7 @@ import tensorflow as tf
 from losses import mse, neg_ll, pairwise_loss
 from models.base import BaseRecommender
 from models.pairwise import PairwiseSLIM
-from models.rigl import RIGLAutoencoder
+# from models.rigl import MaskedAutoencoder
 from util import Logger, load_weights_biases, gen_batches, to_float32
 
 gin.external_configurable(tf.compat.v1.train.GradientDescentOptimizer)
