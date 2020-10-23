@@ -3,8 +3,8 @@ from collections import defaultdict
 
 import gin
 import numpy as np
-
 import tensorflow as tf
+from scipy.sparse import hstack, vstack
 
 from losses import mse, neg_ll, pairwise_loss
 from models.base import BaseRecommender
@@ -269,8 +269,8 @@ class SparseAutoEncoder(object):
         self.logits = self.forward_pass()
         self.loss = tf.reduce_mean(
             loss_fn(labels=self.label_ph, logits=self.logits)) + self.reg_term()
-        self.init_ops = [tf.compat.v1.global_variables_initializer()]
         self.train_op = Optimizer(self.lr).minimize(self.loss)
+        self.init_ops = [tf.compat.v1.global_variables_initializer()]
         self.saver = tf.compat.v1.train.Saver()
 
     def construct_weights(self):
@@ -323,14 +323,14 @@ class SparseAutoEncoder(object):
 
     def reg_term(self):
 
-        reg_var = self.lam * tf.add_n([tf.nn.l2_loss(w) for w in [w.values for w in self.weights] + [self.biases]])
+        reg_var = self.lam * tf.add_n([tf.nn.l2_loss(w) for w in [w.values for w in self.weights] + self.biases])
 
         return 2 * reg_var
 
     def get_density(self, sess=None):
 
         nnzs, sizes = [], []
-        for w_init, b_init in self.w_inits, self.b_inits:
+        for w_init, b_init in zip(self.w_inits, self.b_inits):
             nnzs.extend([w_init.nnz, np.size(b_init)])
             sizes.extend([np.size(w_init), np.size(b_init)])
 
@@ -345,6 +345,67 @@ class SparseAutoEncoder(object):
         """TODO subclass AutoEncoder so we don't need this?
         """
         self.saver.restore(sess, '{}/model'.format(log_dir))
+
+
+@gin.configurable
+class GraphUNet(SparseAutoEncoder):
+    """Graph neural network with bottleneck, from a list of initial weights matrices.
+    Sparse by default.
+    """
+    def __init__(self, n_items, weights_path=None,
+                 latent_dim=2000, n_channels=10, n_conv_layers=1,
+                 randomize_inits=False, normalize_inputs=False, loss="mse",
+                 keep_prob=1.0, lam=0.01, lr=3e-4, random_seed=None,
+                 Optimizer=tf.compat.v1.train.AdamOptimizer):
+        """NOTE: n_layers if fixed to 3 atm.
+        """
+        self.latent_dim = latent_dim
+        self.n_channels = n_channels
+        self.n_conv_layers = n_conv_layers
+        super().__init__(n_items, weights_path=weights_path, n_layers=1,
+                         randomize_inits=randomize_inits, use_biases=True,
+                         normalize_inputs=normalize_inputs, shared_weights=False, loss=loss,
+                         keep_prob=keep_prob, lam=lam, lr=lr, random_seed=random_seed,
+                         init_alpha=None, Optimizer=tf.compat.v1.train.AdamOptimizer)
+
+    def construct_weights(self):
+
+        w_sp = self.w_inits[0]
+        w_sp = tile_sparse_weights(w_sp, max_cols=self.latent_dim, tile_cols=self.n_channels)
+        self.w_inits = [w_sp, w_sp.T]
+        self.b_inits = [None, None]
+
+        return super().construct_weights()
+
+    def forward_pass(self):
+        # construct forward graph
+        if self.normalize_inputs:
+            h = tf.nn.l2_normalize(self.input_ph, 1)
+        else:
+            h = self.input_ph
+        if self.keep_prob_ph != 1.0:
+            h = tf.nn.dropout(h, rate=1-self.keep_prob_ph)
+
+        w1, w2 = self.weights
+        b1, b2 = (None, None) if self.biases is None else self.biases
+
+        # h = tanh(h @ w1 + b1)
+        h = tf.transpose(tf.sparse.sparse_dense_matmul(w1, h, adjoint_a=True, adjoint_b=True))
+        h = h + b1 if b1 else h
+        h = tf.nn.relu(h)
+
+        # reshape + "1x1" convolution + reshape
+        h = tf.reshape(h, [-1, self.latent_dim, self.n_channels])
+        for _ in range(self.n_conv_layers):
+            h = tf.compat.v1.layers.conv1d(h, filters=self.n_channels, kernel_size=1,
+                                           use_bias=True, activation=tf.nn.relu)
+        h = tf.reshape(h, [-1, self.latent_dim * self.n_channels])
+
+        # h = tanh(h @ w1 + b1)
+        h = tf.transpose(tf.sparse.sparse_dense_matmul(w2, h, adjoint_a=True, adjoint_b=True))
+        h = h + b2 if b2 else h
+
+        return h
 
 
 class TFLogger(Logger):
@@ -386,21 +447,38 @@ class TFLogger(Logger):
                 self.summary_writer.add_summary(summary, global_step=step)
 
 
-def sparse_tensor_from_init(init, sparse=True, name='sparse_weight', randomize=False, zero_diag=False):
+def tile_sparse_weights(w_sp, max_rows=None, tile_rows=1, max_cols=None, tile_cols=1):
+    """Tile sparse weights.
 
-    init = init.tocoo()
-    if randomize:
-        init.data = mul_noise(init.data)
+    First selects the first `max_rows` rows and `max_cols` rows and cols,
+    then, if tile_rows > 1, tiles w_sp `tile_rows` times, vertically
+    and if tile_cols > 1, tiles w_sp `tile_cols` times, horizontally
+    """
+    if max_cols is not None:
+        w_sp = w_sp[:max_rows, :max_cols]
+    if tile_rows > 1:
+        w_sp = vstack([w_sp] * tile_rows)
+    if tile_cols > 1:
+        w_sp = hstack([w_sp] * tile_cols)
+
+    return w_sp
+
+
+def sparse_tensor_from_init(w_sp, sparse=True, name='sparse_weight', randomize=False, zero_diag=False):
+    """Create a sparse tensor from a sparse scipy array w_sp.
+    """
+    w_sp = w_sp.tocoo()
     if zero_diag:
-        init.setdiag(0.0)
-        init.eliminate_zeros()
+        w_sp.setdiag(0.0)
+        w_sp.eliminate_zeros()
+    if randomize:
+        w_sp.data = mul_noise(w_sp.data)
+    inds = list(zip(w_sp.row, w_sp.col))
+    data = w_sp.data.astype(np.float32)
 
-    inds = list(zip(init.row, init.col))
-    data = init.data.astype(np.float32)
     w_inds = tf.convert_to_tensor(inds, dtype=np.int64)
     w_data = tf.Variable(data, name=name)
-    w = tf.SparseTensor(w_inds, tf.identity(w_data),
-                        dense_shape=init.shape)
+    w = tf.SparseTensor(w_inds, tf.identity(w_data), dense_shape=w_sp.shape)
     w = tf.sparse.reorder(w)  # as suggested here:
     # https://www.tensorflow.org/api_docs/python/tf/sparse/SparseTensor?version=stable
 
@@ -414,4 +492,3 @@ def mul_noise(x, eps=0.01):
 
     # return = eps * np.random.randn(*x.shape)
     return np.random.exponential(eps) * x
-
