@@ -1,0 +1,15 @@
+
+experiment.Recommender = @TFRecommender
+
+TFRecommender.Model = @PairwiseSLIM
+TFRecommender.batch_size = 100
+TFRecommender.exact_batches = True
+TFRecommender.n_epochs = 30
+
+PairwiseSLIM.weights_path = '/project/models/msd/20200804-122337_weights.npz'
+PairwiseSLIM.randomize = False
+PairwiseSLIM.rescale = False
+PairwiseSLIM.batch_size = 100
+PairwiseSLIM.keep_prob = 0.5
+PairwiseSLIM.lam = 0.0
+PairwiseSLIM.lr = 3e-4

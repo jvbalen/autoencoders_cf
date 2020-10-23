@@ -2,12 +2,12 @@
 experiment.Recommender = @TFRecommender
 
 TFRecommender.Model = @SparseAutoEncoder
-TFRecommender.n_epochs = 0
-TFRecommender.batch_size = 500
+TFRecommender.n_epochs = 20
+TFRecommender.batch_size = 100
 
-SparseAutoEncoder.weights_path = '/Users/jan/experiments/wsdm/msd/20200804-122337_weights.npz'
+SparseAutoEncoder.weights_path = '/project/models/msd/20200804-122337_weights.npz'
 SparseAutoEncoder.normalize_inputs = False
-SparseAutoEncoder.keep_prob = 1.0
+SparseAutoEncoder.keep_prob = 0.5
 SparseAutoEncoder.lam = 0.0
 SparseAutoEncoder.lr = 3e-4
 SparseAutoEncoder.loss = "mse"
