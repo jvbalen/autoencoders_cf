@@ -391,10 +391,12 @@ class GraphUNet(SparseAutoEncoder):
 
         # h = tanh(h @ w1 + b1)
         h = tf.transpose(tf.sparse.sparse_dense_matmul(w1, h, adjoint_a=True, adjoint_b=True))
-        h = h + b1 if b1 else h
+        if b1 is not None:
+            h += b1
         h = tf.nn.relu(h)
 
         # reshape + "1x1" convolution + reshape
+        # TODO: check if reshapes correctly stacks tiled w_inits 
         h = tf.reshape(h, [-1, self.latent_dim, self.n_channels])
         for _ in range(self.n_conv_layers):
             h = tf.compat.v1.layers.conv1d(h, filters=self.n_channels, kernel_size=1,
@@ -403,7 +405,8 @@ class GraphUNet(SparseAutoEncoder):
 
         # h = tanh(h @ w1 + b1)
         h = tf.transpose(tf.sparse.sparse_dense_matmul(w2, h, adjoint_a=True, adjoint_b=True))
-        h = h + b2 if b2 else h
+        if b2 is not None:
+            h += b2
 
         return h
 
