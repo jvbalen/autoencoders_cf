@@ -5,10 +5,11 @@ import gin
 import numpy as np
 
 import tensorflow as tf
-# from tensorflow.contrib.layers import apply_regularization, l2_regularizer
 
+from losses import mse, neg_ll, pairwise_loss
 from models.base import BaseRecommender
 from models.pairwise import PairwiseSLIM
+# from models.rigl import MaskedAutoencoder
 from util import Logger, load_weights_biases, gen_batches, to_float32
 
 gin.external_configurable(tf.compat.v1.train.GradientDescentOptimizer)
@@ -43,9 +44,7 @@ class TFRecommender(BaseRecommender):
         with tf.compat.v1.Session() as self.sess:
             self.logger = TFLogger(self.log_dir, self.sess)
             self.logger.log_config(gin.operative_config_str())
-
-            init = tf.compat.v1.global_variables_initializer()
-            self.sess.run(init)
+            self.sess.run(self.model.init_ops)
 
             metrics = self.evaluate(x_val, y_val)
             for epoch in range(self.n_epochs):
@@ -54,9 +53,10 @@ class TFRecommender(BaseRecommender):
                 print('Evaluating...')
                 metrics = self.evaluate(x_val, y_val, other_metrics={'epoch': epoch})
 
-            if metrics['ndcg'] > best_ndcg:
-                best_ndcg = metrics['ndcg']
-                self.model.save(self.sess, log_dir=self.logger.log_dir)
+                if metrics['ndcg'] > best_ndcg:
+                    best_ndcg = metrics['ndcg']
+                    self.model.save(self.sess, log_dir=self.logger.log_dir)
+
         self.sess = None
 
         return metrics
@@ -92,14 +92,19 @@ class TFRecommender(BaseRecommender):
     def evaluate(self, x_val, y_val, other_metrics=None, test=False):
         """Wrapper around BaseRecommender.evaluate that restores the model
         from the log directory if the session is None.
-        """
 
+        Also compute and report model sparsity.
+        """
+        if other_metrics is None:
+            other_metrics = {}
         if self.sess is None:
             with tf.compat.v1.Session() as self.sess:
                 self.model.restore(self.sess, log_dir=self.logger.log_dir)
+                other_metrics['weight_density'] = self.model.get_density(self.sess)
                 results = super().evaluate(x_val, y_val, other_metrics, test)
             self.sess = None
         else:
+            other_metrics['weight_density'] = self.model.get_density(self.sess)
             results = super().evaluate(x_val, y_val, other_metrics, test)
 
         return results
@@ -132,7 +137,8 @@ class AutoEncoder(object):
                           "nll": neg_ll,
                           "cxe": neg_ll,
                           "bce": tf.nn.sigmoid_cross_entropy_with_logits,
-                          "bxe": tf.nn.sigmoid_cross_entropy_with_logits}
+                          "bxe": tf.nn.sigmoid_cross_entropy_with_logits,
+                          "pairwise": pairwise_loss}
         loss_fn = loss_functions[self.loss]
 
         # placeholders and weights
@@ -147,6 +153,7 @@ class AutoEncoder(object):
             loss_fn(labels=self.label_ph, logits=self.logits)) + self.reg_term()
         self.train_op = Optimizer(self.lr).minimize(self.loss)
         self.saver = tf.compat.v1.train.Saver()
+        self.init_ops = [tf.compat.v1.global_variables_initializer()]
 
     def construct_weights(self):
 
@@ -196,14 +203,13 @@ class AutoEncoder(object):
 
     def reg_term(self):
 
-        # apply regularization to weights
         reg_var = self.lam * tf.add_n([tf.nn.l2_loss(w) for w in self.weights + self.biases])
-        # reg = l2_regularizer(self.lam)
-        # reg_var = apply_regularization(reg, self.weights + self.biases)
 
-        # tensorflow l2 regularization multiply 0.5 to the l2 norm
-        # multiply 2 so that it is back in the same scale
         return 2 * reg_var
+
+    def get_density(self, sess=None):
+
+        return 1.0
 
     def save(self, sess, log_dir):
 
@@ -249,7 +255,8 @@ class SparseAutoEncoder(object):
                           "nll": neg_ll,
                           "cxe": neg_ll,
                           "bce": tf.nn.sigmoid_cross_entropy_with_logits,
-                          "bxe": tf.nn.sigmoid_cross_entropy_with_logits}
+                          "bxe": tf.nn.sigmoid_cross_entropy_with_logits,
+                          "pairwise": pairwise_loss}
         loss_fn = loss_functions[self.loss]
 
         # placeholders and weights
@@ -262,6 +269,7 @@ class SparseAutoEncoder(object):
         self.logits = self.forward_pass()
         self.loss = tf.reduce_mean(
             loss_fn(labels=self.label_ph, logits=self.logits)) + self.reg_term()
+        self.init_ops = [tf.compat.v1.global_variables_initializer()]
         self.train_op = Optimizer(self.lr).minimize(self.loss)
         self.saver = tf.compat.v1.train.Saver()
 
@@ -318,6 +326,15 @@ class SparseAutoEncoder(object):
         reg_var = self.lam * tf.add_n([tf.nn.l2_loss(w) for w in [w.values for w in self.weights] + [self.biases]])
 
         return 2 * reg_var
+
+    def get_density(self, sess=None):
+
+        nnzs, sizes = [], []
+        for w_init, b_init in self.w_inits, self.b_inits:
+            nnzs.extend([w_init.nnz, np.size(b_init)])
+            sizes.extend([np.size(w_init), np.size(b_init)])
+
+        return np.sum(nnzs) / np.sum(sizes)
 
     def save(self, sess, log_dir):
         """TODO subclass AutoEncoder so we don't need this?
@@ -398,13 +415,3 @@ def mul_noise(x, eps=0.01):
     # return = eps * np.random.randn(*x.shape)
     return np.random.exponential(eps) * x
 
-
-def neg_ll(logits, labels):
-
-    log_softmax_var = tf.nn.log_softmax(logits)
-    return -tf.reduce_sum(log_softmax_var * labels, axis=1)
-
-
-def mse(labels, logits):
-
-    return tf.square(labels - logits)

@@ -54,7 +54,8 @@ class BaseRecommender(object):
             batch_metrics['r50'].extend(recall_at_k_batch(y_pred, y, k=20))
             batch_metrics['mean_item_rank'].extend(mean_item_rank(y_pred, y_all=y_val, k=100))
 
-        metrics = {k: np.mean(v) for k, v in batch_metrics.items()}
+        metrics = {k: np.mean(v) for k, v in batch_metrics.items()}  # default: mean
+        metrics.update({'median_' + k: np.median(v) for k, v in batch_metrics.items() if k in ['ndcg', 'r20']})
         metrics['prediction_time'] = prediction_time
         if other_metrics:
             metrics.update(other_metrics)
