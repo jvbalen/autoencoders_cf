@@ -389,21 +389,21 @@ class GraphUNet(SparseAutoEncoder):
         w1, w2 = self.weights
         b1, b2 = (None, None) if self.biases is None else self.biases
 
-        # h = tanh(h @ w1 + b1)
+        # first layer: h = tanh(h @ w1 + b1)
         h = tf.transpose(tf.sparse.sparse_dense_matmul(w1, h, adjoint_a=True, adjoint_b=True))
         if b1 is not None:
             h += b1
         h = tf.nn.relu(h)
 
         # reshape + "1x1" convolution + reshape
-        # TODO: check if reshapes correctly stacks tiled w_inits 
-        h = tf.reshape(h, [-1, self.latent_dim, self.n_channels])
+        # we reshape + transpose as an alternative to np.reshape(a, order='F')
+        h = tf.transpose(tf.reshape(h, [-1, self.n_channels, self.latent_dim]), [0, 2, 1])
         for _ in range(self.n_conv_layers):
             h = tf.compat.v1.layers.conv1d(h, filters=self.n_channels, kernel_size=1,
                                            use_bias=True, activation=tf.nn.relu)
-        h = tf.reshape(h, [-1, self.latent_dim * self.n_channels])
+        h = tf.reshape(tf.transpose(h, [0, 2, 1]), [-1, self.latent_dim * self.n_channels])
 
-        # h = tanh(h @ w1 + b1)
+        # second layer: h = tanh(h @ w1 + b1)
         h = tf.transpose(tf.sparse.sparse_dense_matmul(w2, h, adjoint_a=True, adjoint_b=True))
         if b2 is not None:
             h += b2
