@@ -7,6 +7,9 @@ TFRecommender.batch_size = 100
 
 GraphUNet.weights_path = '/Users/jan/experiments/unet/20201020-202525/weights.npz'
 GraphUNet.normalize_inputs = False
+GraphUNet.latent_dim = 20108
+GraphUNet.n_channels = 1
+GraphUNet.n_conv_layers = 0
 GraphUNet.keep_prob = 1.0
 GraphUNet.lam = 0.0
 GraphUNet.lr = 3e-4
