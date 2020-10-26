@@ -365,6 +365,8 @@ class GraphUNet(SparseAutoEncoder):
                  randomize_inits=False, normalize_inputs=False, loss="mse",
                  keep_prob=1.0, lam=0.01, lr=3e-4, random_seed=None,
                  Optimizer=tf.compat.v1.train.AdamOptimizer):
+        """NOTE: in current implementation, any pretrained biases are discarded
+        """
         self.latent_dim = latent_dim
         self.n_channels = n_channels
         self.n_conv_layers = n_conv_layers
@@ -375,12 +377,17 @@ class GraphUNet(SparseAutoEncoder):
                          init_alpha=None, Optimizer=tf.compat.v1.train.AdamOptimizer)
 
     def construct_weights(self):
+        """Take the single scipy-sparse weight init matrix w_sp and
+        tile w_sp[:, :latent_dim] `n_channels` times in the column dimension.
+        These `n_channels` copies can then be stacked in a third dimension once the weight tensors
+        are constructed from scipy.sparse inits (which are necessarily 2D).
 
+        See function tile_sparse_weights for more on how the tiling is done.
+        """
         assert len(self.w_inits) == 1
-        print(f'self.b_inits = {self.b_inits}')
-        w_sp = self.w_inits[0]
-        w_sp = tile_sparse_weights(w_sp, max_cols=self.latent_dim, tile_cols=self.n_channels)
-        self.w_inits = [w_sp, w_sp.T]
+        w_tiled = tile_sparse_weights(self.w_inits[0], max_cols=self.latent_dim, tile_cols=self.n_channels)
+        self.w_inits = [w_tiled, w_tiled.T]
+        self.b_inits = [None, None]
 
         return super().construct_weights()
 
