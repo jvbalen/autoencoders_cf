@@ -2,6 +2,7 @@
 from collections import defaultdict
 
 import gin
+import time
 import numpy as np
 import tensorflow as tf
 from scipy.sparse import hstack, vstack
@@ -38,6 +39,7 @@ class TFRecommender(BaseRecommender):
     def train(self, x_train, y_train, x_val, y_val):
         """Train a tensorflow recommender"""
 
+        t1 = time.perf_counter()
         tf.compat.v1.reset_default_graph()
         self.model = self.Model(n_items=x_train.shape[1])
         best_ndcg = 0.0
@@ -58,6 +60,7 @@ class TFRecommender(BaseRecommender):
                     self.model.save(self.sess, log_dir=self.logger.log_dir)
 
         self.sess = None
+        metrics['train_time'] = time.perf_counter() - t1
 
         return metrics
 
@@ -313,11 +316,16 @@ class SparseAutoEncoder(object):
 
         for i, w in enumerate(self.weights):
             h = tf.transpose(tf.sparse.sparse_dense_matmul(w, h, adjoint_a=True, adjoint_b=True))
-
             if len(self.biases):
                 h = h + self.biases[i]
-            if i != len(self.weights) - 1:
+            if i <= len(self.weights) - 2:
                 h = tf.nn.tanh(h)
+            if i == len(self.weights) - 2:
+                h = self.latent_flow(h)
+
+        return h
+
+    def latent_flow(self, h):
 
         return h
 
@@ -370,43 +378,21 @@ class GraphUNet(SparseAutoEncoder):
 
     def construct_weights(self):
 
+        assert len(self.w_inits) == 2
+        print(f'self.b_inits = {self.b_inits}')
         w_sp = self.w_inits[0]
         w_sp = tile_sparse_weights(w_sp, max_cols=self.latent_dim, tile_cols=self.n_channels)
         self.w_inits = [w_sp, w_sp.T]
-        self.b_inits = [None, None]
 
         return super().construct_weights()
 
-    def forward_pass(self):
-        # construct forward graph
-        if self.normalize_inputs:
-            h = tf.nn.l2_normalize(self.input_ph, 1)
-        else:
-            h = self.input_ph
-        if self.keep_prob_ph != 1.0:
-            h = tf.nn.dropout(h, rate=1-self.keep_prob_ph)
+    def latent_flow(self, h):
 
-        w1, w2 = self.weights
-        b1, b2 = (None, None) if self.biases is None else self.biases
-
-        # first layer: h = tanh(h @ w1 + b1)
-        h = tf.transpose(tf.sparse.sparse_dense_matmul(w1, h, adjoint_a=True, adjoint_b=True))
-        if b1 is not None:
-            h += b1
-        h = tf.nn.relu(h)
-
-        # reshape + "1x1" convolution + reshape
-        # we reshape + transpose as an alternative to np.reshape(a, order='F')
         h = tf.transpose(tf.reshape(h, [-1, self.n_channels, self.latent_dim]), [0, 2, 1])
         for _ in range(self.n_conv_layers):
             h = tf.compat.v1.layers.conv1d(h, filters=self.n_channels, kernel_size=1,
                                            use_bias=True, activation=tf.nn.relu)
         h = tf.reshape(tf.transpose(h, [0, 2, 1]), [-1, self.latent_dim * self.n_channels])
-
-        # second layer: h = tanh(h @ w1 + b1)
-        h = tf.transpose(tf.sparse.sparse_dense_matmul(w2, h, adjoint_a=True, adjoint_b=True))
-        if b2 is not None:
-            h += b2
 
         return h
 
