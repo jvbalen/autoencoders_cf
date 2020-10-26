@@ -365,8 +365,6 @@ class GraphUNet(SparseAutoEncoder):
                  randomize_inits=False, normalize_inputs=False, loss="mse",
                  keep_prob=1.0, lam=0.01, lr=3e-4, random_seed=None,
                  Optimizer=tf.compat.v1.train.AdamOptimizer):
-        """NOTE: n_layers if fixed to 3 atm.
-        """
         self.latent_dim = latent_dim
         self.n_channels = n_channels
         self.n_conv_layers = n_conv_layers
@@ -378,7 +376,7 @@ class GraphUNet(SparseAutoEncoder):
 
     def construct_weights(self):
 
-        assert len(self.w_inits) == 2
+        assert len(self.w_inits) == 1
         print(f'self.b_inits = {self.b_inits}')
         w_sp = self.w_inits[0]
         w_sp = tile_sparse_weights(w_sp, max_cols=self.latent_dim, tile_cols=self.n_channels)
