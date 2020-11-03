@@ -173,6 +173,82 @@ class ALSRecommender(BaseRecommender):
 
 
 @gin.configurable
+class WALSRecommender(BaseRecommender):
+
+    def __init__(self, log_dir, batch_size=70, save_weights=True,
+                 latent_dim=50, n_iter=20, l2_reg=10., init_scale=0.1,
+                 imposter_weight=0.0, alpha=1.0, beta=1.0,
+                 temperature=None):
+        self.save_weights = save_weights
+        self.latent_dim = latent_dim
+        self.n_iter = n_iter
+        self.l2_reg = l2_reg
+        self.init_scale = init_scale
+        self.imposter_weight = imposter_weight
+        self.temperature = temperature
+        self.alpha = alpha
+        self.beta = beta
+        self.U = None
+        self.V = None
+
+        super().__init__(log_dir, batch_size=batch_size)
+
+    def train(self, x_train, y_train, x_val, y_val):
+        """Train and evaluate
+        """
+        if y_train is not None:
+            warn("SLIM is unsupervised, y_train will be ignored")
+
+        t1 = time.perf_counter()
+        self.U = np.random.randn(x_train.shape[0], self.latent_dim) * self.init_scale
+        self.V = np.random.randn(x_train.shape[1], self.latent_dim) * self.init_scale
+        for i in range(self.n_iter):
+            print(f'Iteration {i + 1}/{self.n_iter}')
+            wt = map(self.row_weights, x_train, self.U)
+            self.U = solve_wols(self.V, yt=x_train, wt=wt, l2_reg=self.l2_reg, verbose=True).T
+            wt = map(self.col_weights, x_train.T, self.V)
+            self.V = solve_wols(self.U, yt=x_train.T, wt=wt, l2_reg=self.l2_reg, verbose=True).T
+            self.evaluate(x_val, y_val)
+        dt = time.perf_counter() - t1
+
+        metrics = self.evaluate(x_val, y_val, other_metrics={'train_time': dt})
+        if self.save_weights and self.logger is not None:
+            self.logger.save_weights(None, other={'U': self.U, 'V': self.V})
+
+        return metrics
+
+    def row_weights(self, x, e, col_weights=False):
+
+        imp, q = 0.0, 1.0
+        x = x.toarray().flatten()
+        if self.imposter_weight or self.temperature is not None:
+            g = self.U @ e if col_weights else e @ self.V.T
+        if self.imposter_weight:
+            thr = np.median(g[:, x > 0]) if np.sum(x > 0) else 0.0
+            imp = (g >= thr)
+        if self.temperature is not None:
+            q = np.exp(g / self.temperature)
+            q = q / np.mean(q)
+
+        return self.beta * q + self.alpha * x + self.imposter_weight * imp
+
+    def col_weights(self, x, e):
+
+        return self.row_weights(x, e, col_weights=True)
+
+    def predict(self, x, y=None):
+        """Predict scores
+        NOTE: if you get a dimension mismatch here for the final multiplication,
+        you probably ended up with S (or another var) a matrix (instead of array)
+        """
+        wt = (1.0 + x_col.toarray().flatten() * self.alpha for x_col in x)
+        u = solve_wols(self.V, yt=x, wt=wt, l2_reg=self.l2_reg, verbose=False).T
+        y_pred = u @ self.V.T
+
+        return y_pred, np.nan
+
+
+@gin.configurable
 class WSLIMRecommender(BaseRecommender):
 
     def __init__(self, log_dir, batch_size=100, target_density=1.0, save_weights=True,
@@ -251,7 +327,7 @@ def solve_ols(x, y, l2_reg=100., zero_diag=False, verbose=False):
     return b
 
 
-def solve_wols(x, yt, wt, l2_reg=100, row_nnz=None, verbose=False, n_steps=None):
+def solve_wols(x, yt, wt, l2_reg=100, row_nnz=None, n_steps=None, verbose=0):
     """Solve the weighted Ordinary Least Squares problem:
         argmin_B | W * (X B - Y) |^2
     where * denotes element-wise multiplication
@@ -272,6 +348,9 @@ def solve_wols(x, yt, wt, l2_reg=100, row_nnz=None, verbose=False, n_steps=None)
     allowing for a big reduction in compute when Y has many cols
     If `row_nnz`, also exclude feature x_i when learning y_i,
     as common in SLIM and EASE^R (zero-diagonal constraint).
+
+    Choose verbose == 1 to show a progress bar, verbose == 2 for
+    more information (min, max, isfinite) on the learned weights
     """
     if n_steps is None:
         try:
@@ -280,7 +359,7 @@ def solve_wols(x, yt, wt, l2_reg=100, row_nnz=None, verbose=False, n_steps=None)
             n_steps = len(wt)  # if Y.T is a generator, try W.T
 
     B_list = []
-    for i, (wt_i, yt_i) in tqdm(enumerate(zip(wt, yt)), total=n_steps):
+    for i, (wt_i, yt_i) in tqdm(enumerate(zip(wt, yt)), total=n_steps, disable=(verbose == 0)):
         wt_i = wt_i.toarray().flatten() if issparse(wt_i) else np.ravel(wt_i)
         yt_i = yt_i.toarray().flatten() if issparse(yt_i) else np.ravel(yt_i)
 
@@ -308,7 +387,7 @@ def solve_wols(x, yt, wt, l2_reg=100, row_nnz=None, verbose=False, n_steps=None)
         B_list.append(b)
 
     B = np.vstack(B_list).T if row_nnz is None else hstack(B_list).T.tocsr()
-    if verbose:
+    if verbose == 2:
         isfinite_B = np.isfinite(B.data).mean() if issparse(B) else np.isfinite(B).mean()
         print(f'    np.isfinite(B.data).mean() = {isfinite_B}')
         print(f'    np.abs(B).min() = {np.abs(B).min()}')
