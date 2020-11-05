@@ -208,7 +208,7 @@ class WALSRecommender(BaseRecommender):
             self.U = solve_wols(self.V, yt=x_train, wt=wt, l2_reg=self.l2_reg, verbose=True).T
             wt = map(self.col_weights, x_train.T, self.V)
             self.V = solve_wols(self.U, yt=x_train.T, wt=wt, l2_reg=self.l2_reg, verbose=True).T
-            self.evaluate(x_val, y_val)
+            self.evaluate(x_val, y_val, step=i+1)
         dt = time.perf_counter() - t1
 
         metrics = self.evaluate(x_val, y_val, other_metrics={'train_time': dt})
@@ -217,20 +217,23 @@ class WALSRecommender(BaseRecommender):
 
         return metrics
 
-    def row_weights(self, x, e, col_weights=False):
+    def row_weights(self, x, e, col_weights=False, asym=False):
 
-        imp, q = 0.0, 1.0
-        x = x.toarray().flatten()
+        q_pos = (x > 0).toarray().flatten()
+        q_neg = np.logical_not(q_pos)
+        imp = 0.0
         if self.imposter_weight or self.temperature is not None:
             g = self.U @ e if col_weights else e @ self.V.T
         if self.imposter_weight:
-            thr = np.median(g[:, x > 0]) if np.sum(x > 0) else 0.0
-            imp = (g >= thr)
+            thr = np.median(g[q_pos]) if np.sum(q_pos) else 0.0
+            imp = q_neg * (g >= thr)
         if self.temperature is not None:
-            q = np.exp(g / self.temperature)
-            q = q / np.mean(q)
+            q = np.exp(-g / self.temperature)
+            q_neg = q_neg.astype(np.float) * q / np.mean(q)
+        if asym:
+            q_pos[g > 1.0] = 0.0  # TODO: test (maybe even simplify everything first)
 
-        return self.beta * q + self.alpha * x + self.imposter_weight * imp
+        return self.beta * q_neg + (1.0 + self.alpha) * q_pos + self.imposter_weight * imp
 
     def col_weights(self, x, e):
 
@@ -244,6 +247,10 @@ class WALSRecommender(BaseRecommender):
         wt = (1.0 + x_col.toarray().flatten() * self.alpha for x_col in x)
         u = solve_wols(self.V, yt=x, wt=wt, l2_reg=self.l2_reg, verbose=False).T
         y_pred = u @ self.V.T
+        if np.random.rand() < 0.1:
+            # one in ten validation batches, print some numbers
+            row = y_pred[np.random.choice(y_pred.shape[0])]
+            print(f'min, median, max, mean, std = {np.min(row), np.median(row), np.max(row), np.mean(row), np.std(row)}')
 
         return y_pred, np.nan
 

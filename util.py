@@ -24,13 +24,14 @@ class Logger(object):
         with open(config_file, 'w') as f:
             f.write(config)
 
-    def log_metrics(self, metrics, config=None, test=False):
+    def log_metrics(self, metrics, config=None, step=None, test=False):
         if self.verbose and test:
             print(f'Test results: {metrics}')
         elif self.verbose:
             print(f'Validation results: {metrics}')
 
-        results_file = 'test_results.csv' if test else 'results.csv'
+        step = '' if step is None else f'_{step}'
+        results_file = f'test_results{step}.csv' if test else f'results{step}.csv'
         results_file = os.path.join(self.log_dir, results_file)
         with open(results_file, 'w') as f:
             for metric, value in metrics.items():
