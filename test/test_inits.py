@@ -33,8 +33,8 @@ def test_wae_inits(tmp_path):
 
     x = random(300, 200, density=0.1)
     y_np, loss = model_np.predict(x)
-    with tf.Session() as sess:
-        init = tf.global_variables_initializer()
+    with tf.compat.v1.Session() as sess:
+        init = tf.compat.v1.global_variables_initializer()
         sess.run(init)
         feed_dict = {model_tf.input_ph: to_float32(x, to_dense=True)}
         y_tf = sess.run(model_tf.logits, feed_dict=feed_dict)

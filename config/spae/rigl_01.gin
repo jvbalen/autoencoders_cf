@@ -1,0 +1,11 @@
+
+experiment.Recommender = @TFRecommender
+
+TFRecommender.Model = @MaskedAutoencoder
+TFRecommender.n_epochs = 50
+
+# PairwiseSLIM.weights_path = '/Users/jan/experiments/wsdm/msd/20200804-122337_weights.npz'
+MaskedAutoencoder.training_method = 'baseline'
+MaskedAutoencoder.keep_prob = 0.5
+MaskedAutoencoder.l2_reg = 0.0
+MaskedAutoencoder.lr = 3e-4

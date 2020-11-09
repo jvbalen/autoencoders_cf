@@ -287,11 +287,12 @@ def load_weights_biases(path):
     return weights, biases
 
 
-def gen_batches(x, y=None, batch_size=100, shuffle=False, progress_bar=True):
+def gen_batches(x, y=None, batch_size=100, shuffle=False, exact=False, progress_bar=True):
     """Generate batches from data arrays x and y
     """
     n_examples = x.shape[0]
-    batch_inds = gen_batch_inds(n_examples, batch_size=batch_size, shuffle=shuffle, progress_bar=progress_bar)
+    batch_inds = gen_batch_inds(n_examples, batch_size=batch_size, shuffle=shuffle,
+                                exact=exact, progress_bar=progress_bar)
     for inds in batch_inds:
         if y is None:
             yield x[inds], None
@@ -299,7 +300,7 @@ def gen_batches(x, y=None, batch_size=100, shuffle=False, progress_bar=True):
             yield x[inds], y[inds]
 
 
-def gen_batch_inds(n_examples, batch_size=100, shuffle=False, progress_bar=True):
+def gen_batch_inds(n_examples, batch_size=100, shuffle=False, exact=False, progress_bar=True):
 
     inds = np.array(range(n_examples)).astype(int)
     if shuffle:
@@ -310,7 +311,8 @@ def gen_batch_inds(n_examples, batch_size=100, shuffle=False, progress_bar=True)
     n_batches = int(np.ceil(n_examples / batch_size))
     for i_batch, start in tqdm(enumerate(range(0, n_examples, batch_size)), total=n_batches, disable=not progress_bar):
         end = min(start + batch_size, n_examples)
-        yield inds[start:end]
+        if not exact or (end - start == batch_size):
+            yield inds[start:end]
 
 
 def sparse_info(m):

@@ -5,24 +5,29 @@ import gin
 import numpy as np
 
 import tensorflow as tf
-from tensorflow.contrib.layers import apply_regularization, l2_regularizer
 
+from losses import mse, neg_ll, pairwise_loss
 from models.base import BaseRecommender
+from models.pairwise import PairwiseSLIM
+# from models.rigl import MaskedAutoencoder
 from util import Logger, load_weights_biases, gen_batches, to_float32
 
-gin.external_configurable(tf.train.GradientDescentOptimizer)
-gin.external_configurable(tf.train.AdamOptimizer)
+gin.external_configurable(tf.compat.v1.train.GradientDescentOptimizer)
+gin.external_configurable(tf.compat.v1.train.AdamOptimizer)
+
+tf.compat.v1.disable_eager_execution()
 
 
 @gin.configurable
 class TFRecommender(BaseRecommender):
 
-    def __init__(self, log_dir=None, Model=None, batch_size=100, n_epochs=10):
+    def __init__(self, log_dir=None, Model=None, batch_size=100, exact_batches=False, n_epochs=10):
         """Build a TF-based auto-encoder model with given initial weights.
         """
         self.log_dir = log_dir
         self.Model = Model
         self.batch_size = batch_size
+        self.exact_batches = exact_batches
         self.n_epochs = n_epochs
         if Model is None:
             self.Model = AutoEncoder
@@ -33,15 +38,13 @@ class TFRecommender(BaseRecommender):
     def train(self, x_train, y_train, x_val, y_val):
         """Train a tensorflow recommender"""
 
-        tf.reset_default_graph()
+        tf.compat.v1.reset_default_graph()
         self.model = self.Model(n_items=x_train.shape[1])
         best_ndcg = 0.0
         with tf.compat.v1.Session() as self.sess:
             self.logger = TFLogger(self.log_dir, self.sess)
             self.logger.log_config(gin.operative_config_str())
-
-            init = tf.compat.v1.global_variables_initializer()
-            self.sess.run(init)
+            self.sess.run(self.model.init_ops)
 
             metrics = self.evaluate(x_val, y_val)
             for epoch in range(self.n_epochs):
@@ -50,41 +53,38 @@ class TFRecommender(BaseRecommender):
                 print('Evaluating...')
                 metrics = self.evaluate(x_val, y_val, other_metrics={'epoch': epoch})
 
-            if metrics['ndcg'] > best_ndcg:
-                best_ndcg = metrics['ndcg']
-                self.model.save(self.sess, log_dir=self.logger.log_dir)
+                if metrics['ndcg'] > best_ndcg:
+                    best_ndcg = metrics['ndcg']
+                    self.model.save(self.sess, log_dir=self.logger.log_dir)
+
         self.sess = None
 
         return metrics
 
     def train_one_epoch(self, x_train, y_train, x_val=None, y_val=None,
                         print_interval=1):
-        for x, y in gen_batches(x_train, y_train, batch_size=self.batch_size):
+        for x, y in gen_batches(x_train, y_train, batch_size=self.batch_size, exact=self.exact_batches):
             x, y = self.prepare_batch(x, y)
             feed_dict = {self.model.input_ph: x, self.model.label_ph: y}
-            summary_train, _ = self.sess.run([self.model.summaries, self.model.train_op],
-                                             feed_dict=feed_dict)
-            self.logger.log_summaries({'summary': summary_train})
+            _, train_loss = self.sess.run([self.model.train_op, self.model.loss], feed_dict=feed_dict)
+            self.logger.log_to_tensorboard({'train_loss': train_loss})
 
     def predict(self, x, y=None):
         """Predict scores.
         If y is not None, also return a loss.
         """
         x, y = self.prepare_batch(x, y)
-        if y is not None:
-            feed_dict = {self.model.input_ph: x, self.model.label_ph: y, self.model.keep_prob_ph: 1.0}
-            y_pred, loss = self.sess.run([self.model.logits, self.model.loss], feed_dict=feed_dict)
-        else:
-            feed_dict = {self.model.input_ph: x, self.model.keep_prob_ph: 1.0}
-            y_pred = self.sess.run(self.model.logits, feed_dict=feed_dict)
-            loss = None
+        feed_dict = {self.model.input_ph: x, self.model.label_ph: y, self.model.keep_prob_ph: 1.0}
+        y_pred, loss = self.sess.run([self.model.logits, self.model.loss], feed_dict=feed_dict)
 
         return y_pred, loss
 
     def prepare_batch(self, x, y=None):
         """Convert a batch of x and y to a sess.run-compatible format"""
         x = to_float32(x, to_dense=True)
-        if y is not None:
+        if y is None:
+            y = to_float32(x, to_dense=True)
+        else:
             y = to_float32(y, to_dense=True)
 
         return x, y
@@ -92,14 +92,19 @@ class TFRecommender(BaseRecommender):
     def evaluate(self, x_val, y_val, other_metrics=None, test=False):
         """Wrapper around BaseRecommender.evaluate that restores the model
         from the log directory if the session is None.
-        """
 
+        Also compute and report model sparsity.
+        """
+        if other_metrics is None:
+            other_metrics = {}
         if self.sess is None:
             with tf.compat.v1.Session() as self.sess:
                 self.model.restore(self.sess, log_dir=self.logger.log_dir)
+                other_metrics['weight_density'] = self.model.get_density(self.sess)
                 results = super().evaluate(x_val, y_val, other_metrics, test)
             self.sess = None
         else:
+            other_metrics['weight_density'] = self.model.get_density(self.sess)
             results = super().evaluate(x_val, y_val, other_metrics, test)
 
         return results
@@ -114,7 +119,7 @@ class AutoEncoder(object):
     def __init__(self, n_items, n_layers=2, latent_dim=100, use_biases=True,
                  normalize_inputs=False, tanh=True, loss="nll",
                  keep_prob=0.5, lam=0.01, lr=3e-4, random_seed=None,
-                 Optimizer=tf.train.AdamOptimizer):
+                 Optimizer=tf.compat.v1.train.AdamOptimizer):
 
         self.n_items = n_items
         self.n_layers = n_layers
@@ -132,13 +137,14 @@ class AutoEncoder(object):
                           "nll": neg_ll,
                           "cxe": neg_ll,
                           "bce": tf.nn.sigmoid_cross_entropy_with_logits,
-                          "bxe": tf.nn.sigmoid_cross_entropy_with_logits}
+                          "bxe": tf.nn.sigmoid_cross_entropy_with_logits,
+                          "pairwise": pairwise_loss}
         loss_fn = loss_functions[self.loss]
 
         # placeholders and weights
-        self.input_ph = tf.placeholder(dtype=tf.float32, shape=[None, n_items])
-        self.label_ph = tf.placeholder(dtype=tf.float32, shape=[None, n_items])
-        self.keep_prob_ph = tf.placeholder_with_default(keep_prob, shape=None)
+        self.input_ph = tf.compat.v1.placeholder(dtype=tf.float32, shape=[None, n_items])
+        self.label_ph = tf.compat.v1.placeholder(dtype=tf.float32, shape=[None, n_items])
+        self.keep_prob_ph = tf.compat.v1.placeholder_with_default(keep_prob, shape=None)
         self.weights, self.biases = self.construct_weights()
 
         # build graph
@@ -147,10 +153,7 @@ class AutoEncoder(object):
             loss_fn(labels=self.label_ph, logits=self.logits)) + self.reg_term()
         self.train_op = Optimizer(self.lr).minimize(self.loss)
         self.saver = tf.compat.v1.train.Saver()
-
-        # add summary statistics
-        tf.compat.v1.summary.scalar('loss', self.loss)
-        self.summaries = tf.compat.v1.summary.merge_all()
+        self.init_ops = [tf.compat.v1.global_variables_initializer()]
 
     def construct_weights(self):
 
@@ -200,13 +203,13 @@ class AutoEncoder(object):
 
     def reg_term(self):
 
-        # apply regularization to weights
-        reg = l2_regularizer(self.lam)
-        reg_var = apply_regularization(reg, self.weights + self.biases)
+        reg_var = self.lam * tf.add_n([tf.nn.l2_loss(w) for w in self.weights + self.biases])
 
-        # tensorflow l2 regularization multiply 0.5 to the l2 norm
-        # multiply 2 so that it is back in the same scale
         return 2 * reg_var
+
+    def get_density(self, sess=None):
+
+        return 1.0
 
     def save(self, sess, log_dir):
 
@@ -225,7 +228,7 @@ class SparseAutoEncoder(object):
                  randomize_inits=False, use_biases=True,
                  normalize_inputs=False, shared_weights=False, loss="mse",
                  keep_prob=1.0, lam=0.01, lr=3e-4, random_seed=None,
-                 Optimizer=tf.train.AdamOptimizer):
+                 init_alpha=None, Optimizer=tf.compat.v1.train.AdamOptimizer):
         weights, biases = load_weights_biases(weights_path)
 
         # make init from (single) weights file break if n_layers > 1 and weights not square
@@ -244,31 +247,31 @@ class SparseAutoEncoder(object):
         self.lam = lam
         self.lr = lr
         self.random_seed = random_seed
+        self.init_b = 0. if init_alpha is None else - np.log(1. / init_alpha - 1.)
+        self.init_a = 1. if init_alpha is None else - np.log(1. / (1. - init_alpha) - 1.) - self.init_b
 
         # loss
         loss_functions = {"mse": mse,
                           "nll": neg_ll,
                           "cxe": neg_ll,
                           "bce": tf.nn.sigmoid_cross_entropy_with_logits,
-                          "bxe": tf.nn.sigmoid_cross_entropy_with_logits}
+                          "bxe": tf.nn.sigmoid_cross_entropy_with_logits,
+                          "pairwise": pairwise_loss}
         loss_fn = loss_functions[self.loss]
 
         # placeholders and weights
-        self.input_ph = tf.placeholder(dtype=tf.float32, shape=[None, w_inits[0].shape[1]])
-        self.label_ph = tf.placeholder(dtype=tf.float32, shape=[None, w_inits[0].shape[1]])
-        self.keep_prob_ph = tf.placeholder_with_default(keep_prob, shape=None)
+        self.input_ph = tf.compat.v1.placeholder(dtype=tf.float32, shape=[None, w_inits[0].shape[1]])
+        self.label_ph = tf.compat.v1.placeholder(dtype=tf.float32, shape=[None, w_inits[0].shape[1]])
+        self.keep_prob_ph = tf.compat.v1.placeholder_with_default(keep_prob, shape=None)
         self.weights, self.biases = self.construct_weights()
 
         # build graph
         self.logits = self.forward_pass()
         self.loss = tf.reduce_mean(
             loss_fn(labels=self.label_ph, logits=self.logits)) + self.reg_term()
+        self.init_ops = [tf.compat.v1.global_variables_initializer()]
         self.train_op = Optimizer(self.lr).minimize(self.loss)
         self.saver = tf.compat.v1.train.Saver()
-
-        # add summary statistics
-        tf.compat.v1.summary.scalar('loss', self.loss)
-        self.summaries = tf.compat.v1.summary.merge_all()
 
     def construct_weights(self):
 
@@ -279,6 +282,7 @@ class SparseAutoEncoder(object):
         for i, (w_init, b_init) in enumerate(zip(self.w_inits, self.b_inits)):
             weight_key = "weight_{}to{}".format(i, i+1)
             bias_key = "bias_{}".format(i+1)
+            w_init *= self.init_a
             if i == 0 or not self.shared_weights:
                 w = sparse_tensor_from_init(w_init, randomize=self.randomize_inits,
                                             zero_diag=True, name=weight_key)
@@ -290,7 +294,8 @@ class SparseAutoEncoder(object):
                 else:
                     if self.randomize_inits:
                         b_init = mul_noise(b_init)
-                    b = tf.Variable(b_init.astype(np.float32), name=bias_key)
+                b_init += self.init_b
+                b = tf.Variable(b_init.astype(np.float32), name=bias_key)
                 tf.compat.v1.summary.histogram(bias_key, b)
                 biases.append(b)
 
@@ -318,13 +323,18 @@ class SparseAutoEncoder(object):
 
     def reg_term(self):
 
-        # apply regularization to weights
-        reg = l2_regularizer(self.lam)
-        reg_var = apply_regularization(reg, [w.values for w in self.weights] + self.biases)
+        reg_var = self.lam * tf.add_n([tf.nn.l2_loss(w) for w in [w.values for w in self.weights] + [self.biases]])
 
-        # tensorflow l2 regularization multiply 0.5 to the l2 norm
-        # multiply 2 so that it is back in the same scale
         return 2 * reg_var
+
+    def get_density(self, sess=None):
+
+        nnzs, sizes = [], []
+        for w_init, b_init in self.w_inits, self.b_inits:
+            nnzs.extend([w_init.nnz, np.size(b_init)])
+            sizes.extend([np.size(w_init), np.size(b_init)])
+
+        return np.sum(nnzs) / np.sum(sizes)
 
     def save(self, sess, log_dir):
         """TODO subclass AutoEncoder so we don't need this?
@@ -353,28 +363,27 @@ class TFLogger(Logger):
         """Log a dictionary of metrics to a tf.compat.v1.summary.FileWriter
         """
         super().log_metrics(metrics, config=config, test=test)
-        if test:
-            return  # don't log test metrics to tensorboard
+        if not test:
+            self.log_to_tensorboard(metrics)
+
+    def log_to_tensorboard(self, metrics, step=None):
 
         feed_dict = {}
         summaries = []
-        for name, value in metrics.items():
-            if name not in self.variables:
-                self.variables[name] = tf.Variable(0.0, name=name)
-                self.summaries[name] = tf.compat.v1.summary.scalar(name, self.variables[name])
-            summaries.append(self.summaries[name])
-            feed_dict[self.variables[name]] = value
-        summaries = self.sess.run(summaries, feed_dict=feed_dict)
-        summaries_dict = dict(zip(metrics.keys(), summaries))
-        self.log_summaries(summaries_dict)
-
-    def log_summaries(self, summaries, step=None):
-
-        for name, summary in summaries.items():
-            self.history[name].append(summary)
-            if step is None:
-                step = len(self.history[name])
-            self.summary_writer.add_summary(summary, global_step=step)
+        with tf.compat.v1.get_default_graph().as_default():
+            for name, value in metrics.items():
+                if name not in self.variables:
+                    self.variables[name] = tf.Variable(0.0, name=name)
+                    self.summaries[name] = tf.compat.v1.summary.scalar(name, self.variables[name])
+                    self.sess.run(tf.compat.v1.variables_initializer([self.variables[name]]))
+                summaries.append(self.summaries[name])
+                feed_dict[self.variables[name]] = value
+            summaries = self.sess.run(summaries, feed_dict=feed_dict)
+            for name, summary in zip(metrics.keys(), summaries):
+                self.history[name].append(summary)
+                if step is None:
+                    step = len(self.history[name])
+                self.summary_writer.add_summary(summary, global_step=step)
 
 
 def sparse_tensor_from_init(init, sparse=True, name='sparse_weight', randomize=False, zero_diag=False):
@@ -406,13 +415,3 @@ def mul_noise(x, eps=0.01):
     # return = eps * np.random.randn(*x.shape)
     return np.random.exponential(eps) * x
 
-
-def neg_ll(logits, labels):
-
-    log_softmax_var = tf.nn.log_softmax(logits)
-    return -tf.reduce_sum(log_softmax_var * labels, axis=1)
-
-
-def mse(labels, logits):
-
-    return tf.square(labels - logits)

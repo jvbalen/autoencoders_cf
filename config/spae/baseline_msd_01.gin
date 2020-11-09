@@ -1,0 +1,3 @@
+
+experiment.Recommender = @LinearRecommenderFromFile
+LinearRecommenderFromFile.path = '/Users/jan/experiments/wsdm/msd/20200804-122337_weights.npz'

@@ -11,7 +11,7 @@ from scipy.sparse import csr_matrix, csc_matrix, coo_matrix, issparse, eye, vsta
 
 from models.base import BaseRecommender
 
-from util import Clock, Node, load_weights_biases, prune, prune_global, prune_rows, add_submatrix, gen_batches
+from util import Clock, Node, load_weights, load_weights_biases, prune, prune_global, prune_rows, add_submatrix, gen_batches
 
 
 @gin.configurable
@@ -111,7 +111,7 @@ class EmbeddingRecommender(BaseRecommender):
             self.embeddings = prune_rows(self.embeddings, target_nnz=self.item_nnz)
         dt = time.perf_counter() - t1
         if self.save_embeddings and self.logger is not None:
-            self.logger.save_weights(self.embeddings)
+            self.logger.save_weights(self.embeddings, other={'priors': self.priors})
 
         print('Evaluating...')
         density = self.embeddings.size / np.prod(self.embeddings.shape)
@@ -125,9 +125,14 @@ class EmbeddingRecommender(BaseRecommender):
         return metrics
 
     def predict(self, x, y=None):
-        """Predict scores"""
+        """Predict scores
+        NOTE: user embeddings h tend to be pretty dense even if the item embeddings are sparse,
+        so we either prune them or make them dense arrays
+        """
         h = x @ self.embeddings
-        if self.user_nnz is not None:
+        if self.user_nnz is None:
+            h = h.toarray() if issparse(h) else h
+        else:
             h = prune_rows(h, target_nnz=self.user_nnz)
         y = h @ self.embeddings.T
         if self.priors is not None:
@@ -135,6 +140,24 @@ class EmbeddingRecommender(BaseRecommender):
             y = y.multiply(priors).tocsr() if issparse(y) else y * priors
 
         return y, np.nan
+
+
+@gin.configurable
+def load_embeddings(x, path=None, truncate=None):
+    """Mock embedding_fn that allows EmbeddingRecommender to be used with pre-trained embeddings
+
+    Example gin-config:
+        EmbeddingRecommender.embedding_fn = @load_embeddings
+        embedding_fn.path = 'PATH/TO/EMBEDDINGS.npz'  # required
+    """
+    embeddings, other = load_weights(path)
+    priors = other.get('priors', None)
+    assert embeddings.shape[0] == x.shape[1]
+    if truncate is not None:
+        embeddings = embeddings[:, :truncate]
+    if issparse(embeddings) and embeddings.nnz > 0.5 * np.prod(embeddings.shape):
+        embeddings = embeddings.toarray()
+    return embeddings, priors
 
 
 @gin.configurable
@@ -203,7 +226,8 @@ def closed_form_slim(x, l2_reg=500):
 
 
 @gin.configurable
-def cholesky_embeddings(x, l2_reg=500, beta=2.0, row_nnz=None, sort_by_nn=False, target_density=1.0):
+def cholesky_embeddings(x, l2_reg=500, beta=2.0, row_nnz=None, sort_by_nn=False, target_density=1.0,
+                        eig=False, rank=None):
     """Cholesky factors of -P + beta * I
 
     If we're only interested in recommending new items, changes
@@ -233,15 +257,24 @@ def cholesky_embeddings(x, l2_reg=500, beta=2.0, row_nnz=None, sort_by_nn=False,
     print('factorizing -P + beta * diag_P')
     A = -P
     A[diag_indices] += beta * diag_P
-    if G.nnz / np.prod(G.shape) > 0.15:
+    if eig:
+        s, E = sp.linalg.eigh(A)
+        assert np.all(s >= 0.)
+        inds = np.argsort(-np.abs(s))  # descending
+        E = E[:, inds] * np.sqrt(s[inds])
+    elif G.nnz / np.prod(G.shape) > 0.15:
+        print('DEBUG: NOT using sksparse')
         E = sp.linalg.cholesky(A, lower=True)
     else:
+        print('DEBUG: using sksparse')
         from sksparse.cholmod import cholesky
         A = csc_matrix((A[G.nonzero()], G.nonzero()), shape=G.shape)
         E = cholesky(A, ordering_method='natural').L()
+    if rank is not None:
+        E = E[:, :rank]
     clock.interval()
     print('pruning factors')
-    E = prune(E, target_nnz=row_nnz, target_density=1.0)
+    E = prune(E, row_nnz=row_nnz, target_density=1.0)
     clock.interval()
 
     print('computing priors')

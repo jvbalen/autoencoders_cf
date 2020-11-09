@@ -10,7 +10,8 @@ setup(
     packages=find_packages(),
     python_requires='>=3.6',
     install_requires=['numpy', 'scipy', 'pandas', 'scikit-learn',
-                      'tensorflow==1.15.4', 'gin-config', 'tqdm'],
+                      'tensorflow>=1.15.2', 'gin-config', 'tqdm'],
+                      'tensorflow>=1.15.4', 'gin-config', 'tqdm'],
     extras_require={
         'test': ['pytest'],
     },
