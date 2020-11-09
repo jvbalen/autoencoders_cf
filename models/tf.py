@@ -446,10 +446,10 @@ class TFLogger(Logger):
         self.summary_writer = tf.compat.v1.summary.FileWriter(self.log_dir, graph=tf.compat.v1.get_default_graph())
         self.history = defaultdict(list)
 
-    def log_metrics(self, metrics, config=None, test=False):
+    def log_metrics(self, metrics, config=None, step=None, test=False):
         """Log a dictionary of metrics to a tf.compat.v1.summary.FileWriter
         """
-        super().log_metrics(metrics, config=config, test=test)
+        super().log_metrics(metrics, config=config, step=step, test=test)
         if not test:
             self.log_to_tensorboard(metrics)
 
