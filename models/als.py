@@ -2,6 +2,7 @@
 """
 import time
 from warnings import warn
+from collections import defaultdict
 
 import gin
 import numpy as np
@@ -173,6 +174,179 @@ class ALSRecommender(BaseRecommender):
 
 
 @gin.configurable
+class WALSRecommender(BaseRecommender):
+
+    def __init__(self, log_dir, batch_size=70, save_weights=True,
+                 latent_dim=50, n_iter=20, l2_reg=10., init_scale=0.1,
+                 alpha=1.0, discordance_weighting=0.0, n_pairs=None,
+                 min_weight=1.0, cache_scores=False):
+        """Matrix factorization recommender with weighted square loss, optimized using
+        Alternating Least Squares optimization.
+
+        Supports Hu's original weighting scheme (negatives @ 1.0 and positives @ 1.0 + alpha)
+        as well as a new ranking loss-inducing weighting, in which both positives and negatives
+        are weighted according to (an estimate of) the number of discordant pos-neg pairs they
+        are part of, attenuated with exponent `discordance_weighting` in (0, 1].
+
+        Parameters:
+        - log_dir (str): logging directory (a new timestamped directory will be created inside of it)
+        - batch_size (int): evaluation batch_size
+        - save_weights (bool): whether to save weights
+        - latent_dim (int): the dimension of the user and item embeddings
+        - n_iter (int): number of alternating least squares steps. Users and items are each updated
+            once on each iteration
+        - l2_reg (float): l2 regularization parameter
+        - init_scale (float): draw initial user and item vectors using a standard-normal distribution
+            with this scale
+        - alpha (float): if discordance_weighting == 0, use Hu's W-ALS weighting with this alpha
+        - discordance_weighting (float): if discordance_weighting > 0, ignore alpha and weight
+            positives and negatives according to (an estimate of) the number of discordant pos-neg
+            pairs they are part of, attenuated with exponent `discordance_weighting` in (0, 1].
+            Note: discordance weighting is used during user factor updates only, unless
+            `cache_scores` is True.
+        - n_pairs (int): maximum number of pos-neg pairs to check for each positive or negative
+            when estimating the number of discordant pos-neg pairs
+        - cache_scores (bool): if True, use discordance weighting during item factor
+            updates as well, using a cached sample of pos and negative item scores for each user
+        """
+        self.save_weights = save_weights
+        self.latent_dim = latent_dim
+        self.n_iter = n_iter
+        self.l2_reg = l2_reg
+        self.init_scale = init_scale
+        self.alpha = alpha
+        self.discordance_weighting = discordance_weighting
+        self.cache_scores = cache_scores
+        self.min_weight = min_weight
+        self.n_pairs = n_pairs
+        self.user_stats = defaultdict(list)
+        self.U = None
+        self.V = None
+
+        super().__init__(log_dir, batch_size=batch_size)
+
+    def train(self, x_train, y_train, x_val, y_val):
+        """Train and evaluate
+        """
+        if y_train is not None:
+            warn("SLIM is unsupervised, y_train will be ignored")
+
+        t1 = time.perf_counter()
+        self.U = np.random.randn(x_train.shape[0], self.latent_dim) * self.init_scale
+        self.V = np.random.randn(x_train.shape[1], self.latent_dim) * self.init_scale
+        for i in range(self.n_iter):
+            print(f'Iteration {i + 1}/{self.n_iter}')
+            self.user_stats = defaultdict(list)
+
+            wt = map(self.item_weights, x_train, self.U)
+            self.U = solve_wols(self.V, yt=x_train, wt=wt, l2_reg=self.l2_reg, verbose=True).T
+            wt = map(self.user_weights, x_train.T, self.V)
+            self.V = solve_wols(self.U, yt=x_train.T, wt=wt, l2_reg=self.l2_reg, verbose=True).T
+            other_metrics = {'mean_wpos': np.mean(self.user_stats['w_pos']),
+                             'mean_wneg': np.mean(self.user_stats['w_neg']),
+                             'mean_trailing_negatives': np.mean(self.user_stats['trailing_negatives'])}
+            self.evaluate(x_val, y_val, step=i+1, other_metrics=other_metrics)
+        dt = time.perf_counter() - t1
+
+        metrics = self.evaluate(x_val, y_val, other_metrics={'train_time': dt})
+        if self.save_weights and self.logger is not None:
+            self.logger.save_weights(None, other={'U': self.U, 'V': self.V})
+
+        return metrics
+
+    def item_weights(self, x, u, print_prob=0.00003, cache_weights=True):
+        """
+        TODO: Discordance weighting (with cache_scores = False) currently
+        appears to cause w_neg < 1 most of the time. Why?
+        """
+        pos = (x > 0).toarray().flatten()
+        neg = np.logical_not(pos)
+        if self.discordance_weighting:
+            n_items = x.shape[1]
+            w = np.ones(n_items)
+            y = u @ self.V.T
+            y_pos, y_neg = y[pos], y[neg]
+
+            keep_prob = self.n_pairs / np.sum(neg)
+            y_neg_sample = np.percentile(y_neg, q=np.linspace(0, 100, self.n_pairs))
+            discordance = y_pos[None, :] < y_neg_sample[:, None]
+            w[pos] = (np.sum(discordance, axis=0) / keep_prob + self.min_weight) ** self.discordance_weighting
+            if self.cache_scores:
+                self.user_stats['y_neg'].append(y_neg_sample)
+                self.user_stats['n_neg'].append(np.sum(neg))
+
+            keep_prob = self.n_pairs / np.sum(pos)
+            y_pos_sample = np.percentile(y[pos], q=np.linspace(0, 100, self.n_pairs))
+            discordance = y_neg[None, :] > y_pos_sample[:, None]
+            w[neg] = (np.sum(discordance, axis=0) / keep_prob + self.min_weight) ** self.discordance_weighting
+            if self.cache_scores:
+                self.user_stats['y_pos'].append(y_pos_sample)
+                self.user_stats['n_pos'].append(np.sum(pos))
+        else:
+            w = 1.0 + self.alpha * pos
+        if cache_weights:
+            self.user_stats['w_pos'].append(np.median(w[pos]))
+            self.user_stats['w_neg'].append(np.median(w[neg]))
+            self.user_stats['trailing_negatives'].append(
+                np.sum(w[neg] == self.min_weight ** self.discordance_weighting))
+        if np.random.rand() < print_prob:
+            rand_pos, rand_neg = np.random.choice(np.sum(pos), 5), np.random.choice(np.sum(neg), 5)
+            print(f'for current user, w[neg]{rand_neg.tolist()} = {w[neg][rand_neg]}')
+            print(f'for current user, w[pos]{rand_pos.tolist()} = {w[pos][rand_pos]}')
+
+        return w
+
+    def item_weights_eval(self, x, u, print_prob=0.0003):
+
+        return self.item_weights(x, u, print_prob=print_prob, cache_weights=False)
+
+    def user_weights(self, x, v, print_prob=0.0003):
+
+        pos = (x > 0).toarray().flatten()
+        neg = np.logical_not(pos)
+        if self.cache_scores:
+            n_users = x.shape[1]
+            w = np.ones(n_users)
+            y = self.U @ v
+            y_pos, y_neg = y[pos], y[neg]
+            y_neg_sample = np.array(self.user_stats['y_neg'])[pos]
+            discordance = y_pos[:, None] < y_neg_sample  # (n_pos, None) x (n_pos, n_pairs)
+            discordance = discordance * np.array(self.user_stats['n_neg'])[pos, None] / self.n_pairs
+            w[pos] = (np.sum(discordance, axis=1) + self.min_weight) ** self.discordance_weighting
+
+            y_pos_sample = np.array(self.user_stats['y_pos'])[neg]
+            discordance = y_neg[:, None] > y_pos_sample  # (n_neg, None) x (n_neg, n_pairs)
+            discordance = discordance * np.array(self.user_stats['n_pos'])[neg, None] / self.n_pairs
+            w[neg] = (np.sum(discordance, axis=1) + self.min_weight) ** self.discordance_weighting
+        else:
+            w_neg = np.array(self.user_stats['w_neg'])
+            w_pos = np.array(self.user_stats['w_pos'])
+            w = w_neg * neg + w_pos * pos
+        if np.random.rand() < print_prob:
+            rand_pos, rand_neg = np.random.choice(np.sum(pos), 5), np.random.choice(np.sum(neg), 5)
+            print(f'for current item, w[neg]{rand_neg.tolist()} = {w[neg][rand_neg]}')
+            print(f'for current item, w[pos]{rand_pos.tolist()} = {w[pos][rand_pos]}')
+
+        return w
+
+    def predict(self, x, y=None, refine_steps=1, print_prob=0.1):
+        w_neg = np.mean(self.user_stats['w_neg'])
+        w_pos = np.mean(self.user_stats['w_pos'])
+        wt = (w_neg + (w_pos - w_neg) * x_col.toarray().flatten() for x_col in x)
+        u = solve_wols(self.V, yt=x, wt=wt, l2_reg=self.l2_reg, verbose=False).T
+        for _ in range(refine_steps):
+            wt = map(self.item_weights_eval, x, u)
+            u = solve_wols(self.V, yt=x, wt=wt, l2_reg=self.l2_reg, verbose=False).T
+        y_pred = u @ self.V.T
+        if np.random.rand() < print_prob:
+            i = np.random.choice(y_pred.shape[0])
+            yi = y_pred[i]
+            print(f'for current batch, y_pred[{i}]: min, median, max = {np.min(yi), np.median(yi), np.max(yi)}')
+
+        return y_pred, np.nan
+
+
+@gin.configurable
 class WSLIMRecommender(BaseRecommender):
 
     def __init__(self, log_dir, batch_size=100, target_density=1.0, save_weights=True,
@@ -251,7 +425,7 @@ def solve_ols(x, y, l2_reg=100., zero_diag=False, verbose=False):
     return b
 
 
-def solve_wols(x, yt, wt, l2_reg=100, row_nnz=None, verbose=False, n_steps=None):
+def solve_wols(x, yt, wt, l2_reg=100, row_nnz=None, n_steps=None, verbose=0):
     """Solve the weighted Ordinary Least Squares problem:
         argmin_B | W * (X B - Y) |^2
     where * denotes element-wise multiplication
@@ -272,6 +446,9 @@ def solve_wols(x, yt, wt, l2_reg=100, row_nnz=None, verbose=False, n_steps=None)
     allowing for a big reduction in compute when Y has many cols
     If `row_nnz`, also exclude feature x_i when learning y_i,
     as common in SLIM and EASE^R (zero-diagonal constraint).
+
+    Choose verbose == 1 to show a progress bar, verbose == 2 for
+    more information (min, max, isfinite) on the learned weights
     """
     if n_steps is None:
         try:
@@ -280,7 +457,7 @@ def solve_wols(x, yt, wt, l2_reg=100, row_nnz=None, verbose=False, n_steps=None)
             n_steps = len(wt)  # if Y.T is a generator, try W.T
 
     B_list = []
-    for i, (wt_i, yt_i) in tqdm(enumerate(zip(wt, yt)), total=n_steps):
+    for i, (wt_i, yt_i) in tqdm(enumerate(zip(wt, yt)), total=n_steps, disable=(verbose == 0)):
         wt_i = wt_i.toarray().flatten() if issparse(wt_i) else np.ravel(wt_i)
         yt_i = yt_i.toarray().flatten() if issparse(yt_i) else np.ravel(yt_i)
 
@@ -308,7 +485,7 @@ def solve_wols(x, yt, wt, l2_reg=100, row_nnz=None, verbose=False, n_steps=None)
         B_list.append(b)
 
     B = np.vstack(B_list).T if row_nnz is None else hstack(B_list).T.tocsr()
-    if verbose:
+    if verbose == 2:
         isfinite_B = np.isfinite(B.data).mean() if issparse(B) else np.isfinite(B).mean()
         print(f'    np.isfinite(B.data).mean() = {isfinite_B}')
         print(f'    np.abs(B).min() = {np.abs(B).min()}')

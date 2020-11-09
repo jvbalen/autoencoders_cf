@@ -11,7 +11,7 @@ from losses import mse, neg_ll, pairwise_loss
 from models.base import BaseRecommender
 from models.pairwise import PairwiseSLIM
 # from models.rigl import MaskedAutoencoder
-from util import Logger, load_weights_biases, gen_batches, to_float32
+from util import Logger, load_weights_biases, gen_batches, to_float32, prune_rows
 
 gin.external_configurable(tf.compat.v1.train.GradientDescentOptimizer)
 gin.external_configurable(tf.compat.v1.train.AdamOptimizer)
@@ -228,20 +228,23 @@ class SparseAutoEncoder(object):
     """Autoencoder from a list of initial weights matrices. Sparse by default.
     """
     def __init__(self, n_items, weights_path=None, n_layers=1,
-                 randomize_inits=False, use_biases=True,
+                 row_nnz=None, randomize_inits=False, use_biases=True,
                  normalize_inputs=False, shared_weights=False, loss="mse",
                  keep_prob=1.0, lam=0.01, lr=3e-4, random_seed=None,
                  init_alpha=None, Optimizer=tf.compat.v1.train.AdamOptimizer):
         weights, biases = load_weights_biases(weights_path)
 
         # make init from (single) weights file break if n_layers > 1 and weights not square
-        assert weights.shape[0] == n_items
+        assert weights.shape[0] == n_items, f"Weights don't match dataset. weights.shape[0] = {weights.shape[0]}, n_items = {n_items}"
         assert n_layers > 2 or weights.shape[0] == weights.shape[1]
         w_inits = [weights] * n_layers
         b_inits = [biases] * n_layers
 
         self.w_inits = w_inits
+        print(f'b_inits: {b_inits}')
+        print(f'w_inits: {w_inits}')
         self.b_inits = [None] * len(w_inits) if b_inits is None else b_inits
+        self.row_nnz = row_nnz
         self.randomize_inits = randomize_inits
         self.use_biases = use_biases
         self.normalize_inputs = normalize_inputs
@@ -288,7 +291,7 @@ class SparseAutoEncoder(object):
             w_init *= self.init_a
             if i == 0 or not self.shared_weights:
                 w = sparse_tensor_from_init(w_init, randomize=self.randomize_inits,
-                                            zero_diag=True, name=weight_key)
+                                            zero_diag=True, name=weight_key, row_nnz=self.row_nnz)
             weights.append(w)
 
             if self.use_biases:
@@ -301,31 +304,45 @@ class SparseAutoEncoder(object):
                 b = tf.Variable(b_init.astype(np.float32), name=bias_key)
                 tf.compat.v1.summary.histogram(bias_key, b)
                 biases.append(b)
+        print([w.values.shape for w in weights])
+        print([b.shape for b in biases])
 
         return weights, biases
 
     def forward_pass(self):
         # construct forward graph
+
+        h = self.process_inputs()
+        h = self.encoder(h)
+
+        return self.decoder(h)
+
+    def process_inputs(self):
+
+        h = self.input_ph
         if self.normalize_inputs:
             h = tf.nn.l2_normalize(self.input_ph, 1)
-        else:
-            h = self.input_ph
-
         if self.keep_prob_ph != 1.0:
             h = tf.nn.dropout(h, rate=1-self.keep_prob_ph)
 
-        for i, w in enumerate(self.weights):
+        return h
+
+    def encoder(self, h):
+
+        for i, w in enumerate(self.weights[:-1]):
             h = tf.transpose(tf.sparse.sparse_dense_matmul(w, h, adjoint_a=True, adjoint_b=True))
             if len(self.biases):
                 h = h + self.biases[i]
-            if i <= len(self.weights) - 2:
-                h = tf.nn.tanh(h)
-            if i == len(self.weights) - 2:
-                h = self.latent_flow(h)
+            h = tf.nn.tanh(h)
 
         return h
 
-    def latent_flow(self, h):
+    def decoder(self, h):
+
+        # single sparse layer
+        h = tf.transpose(tf.sparse.sparse_dense_matmul(self.weights[-1], h, adjoint_a=True, adjoint_b=True))
+        if len(self.biases):
+            h = h + self.biases[-1]
 
         return h
 
@@ -357,15 +374,16 @@ class SparseAutoEncoder(object):
 
 @gin.configurable
 class GraphUNet(SparseAutoEncoder):
-    """Graph neural network with bottleneck, from a list of initial weights matrices.
-    Sparse by default.
-    """
+
     def __init__(self, n_items, weights_path=None,
-                 latent_dim=2000, n_channels=10, n_conv_layers=1,
+                 latent_dim=2000, n_channels=10, n_conv_layers=1, shared_weights=False,
                  randomize_inits=False, normalize_inputs=False, loss="mse",
                  keep_prob=1.0, lam=0.01, lr=3e-4, random_seed=None,
                  Optimizer=tf.compat.v1.train.AdamOptimizer):
-        """NOTE: in current implementation, any pretrained biases are discarded
+        """Graph neural network with bottleneck, from a list of initial weights matrices.
+        Sparse by default.
+
+        NOTE: in current implementation, any pretrained biases are discarded
         """
         self.latent_dim = latent_dim
         self.n_channels = n_channels
@@ -375,9 +393,16 @@ class GraphUNet(SparseAutoEncoder):
                          normalize_inputs=normalize_inputs, shared_weights=False, loss=loss,
                          keep_prob=keep_prob, lam=lam, lr=lr, random_seed=random_seed,
                          init_alpha=None, Optimizer=tf.compat.v1.train.AdamOptimizer)
+        self.diffuser = None
+        if shared_weights:
+            pruned_graph = prune_rows(self.w_inits[0], target_nnz=3).tocoo()
+            inds = np.vstack([pruned_graph.row, pruned_graph.col]).T.astype(np.int64)
+            vals = np.ones_like(pruned_graph.data)
+            self.diffuser = tf.sparse.SparseTensor(tf.constant(inds), tf.constant(vals), dense_shape=pruned_graph.shape)
+            self.diffuser = tf.sparse.reorder(self.diffuser)
 
     def construct_weights(self):
-        """Take the single scipy-sparse weight init matrix w_sp and
+        """Take the single scipy-sparse weight init matrix w_sp = w_inits[0] and
         tile w_sp[:, :latent_dim] `n_channels` times in the column dimension.
         These `n_channels` copies can then be stacked in a third dimension once the weight tensors
         are constructed from scipy.sparse inits (which are necessarily 2D).
@@ -386,13 +411,20 @@ class GraphUNet(SparseAutoEncoder):
         """
         assert len(self.w_inits) == 1
         w_tiled = tile_sparse_weights(self.w_inits[0], max_cols=self.latent_dim, tile_cols=self.n_channels)
-        self.w_inits = [w_tiled, w_tiled.T]
+        self.w_inits = [0.01 * w_tiled, 100. * w_tiled.T]
         self.b_inits = [None, None]
 
         return super().construct_weights()
 
-    def latent_flow(self, h):
+    def encoder(self, h):
 
+        if self.shared_weights:
+            h = h @ self.diffuser
+        super().encoder(h)
+        if self.n_conv_layers == 0:
+            return h
+
+        # apply conv layers
         h = tf.transpose(tf.reshape(h, [-1, self.n_channels, self.latent_dim]), [0, 2, 1])
         for _ in range(self.n_conv_layers):
             h = tf.compat.v1.layers.conv1d(h, filters=self.n_channels, kernel_size=1,
@@ -441,14 +473,14 @@ class TFLogger(Logger):
                 self.summary_writer.add_summary(summary, global_step=step)
 
 
-def tile_sparse_weights(w_sp, max_rows=None, tile_rows=1, max_cols=None, tile_cols=1):
+def tile_sparse_weights(w_sp, max_cols=None, tile_cols=1, max_rows=None, tile_rows=1, row_nnz=None):
     """Tile sparse weights.
 
     First selects the first `max_rows` rows and `max_cols` rows and cols,
     then, if tile_rows > 1, tiles w_sp `tile_rows` times, vertically
     and if tile_cols > 1, tiles w_sp `tile_cols` times, horizontally
     """
-    if max_cols is not None:
+    if max_rows is not None or max_cols is not None:
         w_sp = w_sp[:max_rows, :max_cols]
     if tile_rows > 1:
         w_sp = vstack([w_sp] * tile_rows)
@@ -458,22 +490,24 @@ def tile_sparse_weights(w_sp, max_rows=None, tile_rows=1, max_cols=None, tile_co
     return w_sp
 
 
-def sparse_tensor_from_init(w_sp, sparse=True, name='sparse_weight', randomize=False, zero_diag=False):
+def sparse_tensor_from_init(w_sp, name='sparse_weight', randomize=False, zero_diag=False, row_nnz=None):
     """Create a sparse tensor from a sparse scipy array w_sp.
     """
     w_sp = w_sp.tocoo()
     if zero_diag:
         w_sp.setdiag(0.0)
         w_sp.eliminate_zeros()
+    if row_nnz is not None:
+        w_sp = prune_rows(w_sp, target_nnz=row_nnz).tocoo()
     if randomize:
         w_sp.data = mul_noise(w_sp.data)
     inds = list(zip(w_sp.row, w_sp.col))
     data = w_sp.data.astype(np.float32)
 
     w_inds = tf.convert_to_tensor(inds, dtype=np.int64)
-    w_data = tf.Variable(data, name=name)
+    w_data = tf.Variable(data, name=name + '_data')
     w = tf.SparseTensor(w_inds, tf.identity(w_data), dense_shape=w_sp.shape)
-    w = tf.sparse.reorder(w)  # as suggested here:
+    w = tf.sparse.reorder(w, name=name)  # as suggested here:
     # https://www.tensorflow.org/api_docs/python/tf/sparse/SparseTensor?version=stable
 
     #  summary for tensorboard
@@ -482,7 +516,7 @@ def sparse_tensor_from_init(w_sp, sparse=True, name='sparse_weight', randomize=F
     return w
 
 
-def mul_noise(x, eps=0.01):
+def mul_noise(x, eps=0.001):
 
-    # return = eps * np.random.randn(*x.shape)
-    return np.random.exponential(eps) * x
+    return eps * np.maximum(np.minimum(np.random.randn(*x.shape), 3.), -3.)
+    # return np.random.exponential(eps) * x

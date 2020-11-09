@@ -1,0 +1,14 @@
+# MF with WALS, test
+
+experiment.Recommender = @WALSRecommender
+# preprocess.user_cap = 10000
+# preprocess.item_cap = 1000
+
+WALSRecommender.n_iter = 10
+WALSRecommender.beta = 1.0
+WALSRecommender.alpha = 1.0
+WALSRecommender.imposter_weight = 0.0
+WALSRecommender.temperature = -1.0
+WALSRecommender.save_weights = False
+WALSRecommender.batch_size = 500
+WALSRecommender.l2_reg = 10
