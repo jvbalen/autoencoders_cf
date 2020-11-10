@@ -1,4 +1,4 @@
-"""global-local SLIM/EASE variants, such as models with item clusters and user clusters
+"""Recommenders based on Alternating Least Squares optimization
 """
 import time
 from warnings import warn
@@ -10,7 +10,7 @@ from scipy.sparse import issparse, hstack, csr_matrix
 from tqdm import tqdm
 
 from models.base import BaseRecommender
-from util import Clock, prune_global, gen_batch_inds, prune_rows, load_weights
+from util import Clock, prune_global, prune_rows
 
 
 @gin.configurable
