@@ -128,10 +128,21 @@ class ALSRecommender(BaseRecommender):
 
     def __init__(self, log_dir, batch_size=70, save_weights=True,
                  latent_dim=50, n_iter=20, l2_reg=10., init_scale=0.1):
-        """Gobal-local EASE v0
-        - low-rank and high-rank joint linear model
-        - R ~ U @ V + R @ S
-        - no clustering
+        """Alternating Least Squares matrix factorization recommender
+
+        Approximates X as U @ V.T, finds U and V by alternating between solving for U
+        and V using closed-form OLS.
+
+        Parameters:
+        - log_dir (str): logging directory (a new timestamped directory will be created inside of it)
+        - batch_size (int): evaluation batch_size
+        - save_weights (bool): whether to save weights
+        - latent_dim (int): the dimension of the user and item embeddings
+        - n_iter (int): number of alternating least squares steps. Users and items are each updated
+            once on each iteration
+        - l2_reg (float): l2 regularization parameter
+        - init_scale (float): draw initial user and item vectors using a standard-normal distribution
+            with this scale
         """
         self.save_weights = save_weights
         self.latent_dim = latent_dim
@@ -164,8 +175,6 @@ class ALSRecommender(BaseRecommender):
 
     def predict(self, x, y=None):
         """Predict scores
-        NOTE: if you get a dimension mismatch here for the final multiplication,
-        you probably ended up with S (or another var) a matrix (instead of array)
         """
         u = solve_ols(self.V, x.T, l2_reg=self.l2_reg, verbose=False).T
         y_pred = u @ self.V.T
@@ -183,10 +192,11 @@ class WALSRecommender(BaseRecommender):
         """Matrix factorization recommender with weighted square loss, optimized using
         Alternating Least Squares optimization.
 
-        Supports Hu's original weighting scheme (negatives @ 1.0 and positives @ 1.0 + alpha)
-        as well as a new ranking loss-inducing weighting, in which both positives and negatives
-        are weighted according to (an estimate of) the number of discordant pos-neg pairs they
-        are part of, attenuated with exponent `discordance_weighting` in (0, 1].
+        Implementation focused on arbitrary dense weights. Supports Hu's original weighting scheme
+        (negatives @ 1.0 and positives @ 1.0 + alpha) but not efficiently.
+        Also supports experimental ranking loss-inducing weighting, in which both positives and
+        negatives are weighted according to (an estimate of) the number of discordant pos-neg pairs
+        they are part of, attenuated with exponent `discordance_weighting` in (0, 1].
 
         Parameters:
         - log_dir (str): logging directory (a new timestamped directory will be created inside of it)

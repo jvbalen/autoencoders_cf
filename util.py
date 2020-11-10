@@ -224,9 +224,10 @@ def save_weights(path, sparse_weights, other=None):
     array "biases" to the same file. This does not interfere
     with `scipy.sparse.load_npz`.
     """
-    save_npz(path, sparse_weights)
+    if sparse_weights is not None:
+        save_npz(path, sparse_weights)
     if other:
-        data = dict(np.load(path))
+        data = dict() if sparse_weights is None else dict(np.load(path))
         data.update(other)
         np.savez(path, **data)
 
