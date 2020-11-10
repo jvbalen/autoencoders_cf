@@ -6,21 +6,23 @@ This repo is based on [`vae_cf`](https://github.com/dawenl/vae_cf) by Liang, aut
 
 It also incorporates some refactoring due to [`vae-cf-pytorch`](https://github.com/belepi93/vae-cf-pytorch) by `belepi93`.
 
+
 ## Models
 
 Mostly stable implementations:
-- `models.linear.LinearRecommender`: Simple linear recommender that defaults to SLIM [3] in its closed-form variant [2]. Can be combined with several other non-gradient-based learning algorithms via its `weights_fn` argument. See also `LinearRecommenderFromFile`
-- `models.als.ALSRecommender`: simple implementation of Hu's weighted alternating least squares [4]
+- `models.linear.LinearRecommender`: simple linear recommender that defaults to SLIM [3] in its closed-form variant [2]. Can be combined with several other non-gradient-based learning algorithms via its `weights_fn` argument. See also `LinearRecommenderFromFile`
 - `models.skl.SKLRecommender`: a recommender class for wrapping scikit-learn classifiers 
+- `models.als.ALSRecommender`: a simplified implementation of Hu's weighted alternating least squares [4]
+- `models.tf.TFRecommender`: a (denoising) auto-encoder recommender implemented in TensorFlow, various models supported
 
 Experimental:
+- `models.als.WALSRecommender`: a version of Hu's weighted ALS [4] but with arbitrary dense weights
 - `models.als.WSLIMRecommender`: a closed-form version of SLIM with weighting as proposed in Hu's weighted ALS paper [4]
-- `models.tf.WAERecommender`: a sparse, full-rank auto-encoder, implemented in TensorFlow
+- `models.distill.DistilledRecommender`: a TFRecommender that is trained on the predictions of another model
 
 Baselines:
 - `models.base.PopularityRecommender`
 
-The `WAE` model performs high-dimensional regression, like SLIM [3] and EASE^R [2], but with sparse weights. It uses SGD for optimization, and additionally supports binary and categorical cross-entropy alongside SLIM's squared-error loss.
 
 ## Configuration
 
@@ -34,9 +36,9 @@ LinearRecommender.target_density = 0.01
 closed_form_slim.l2_reg = 100.0
 ```
 
-With the above saved to `config/slim.gin`, an experiment may look like this:
+The above is included here as `config/example/slim.gin`. An experiment may look like this:
 ```{bash}
-python run.py --data ~/data/ml-20m --logdir ~/experiments/ml-20m --config config/slim.gin
+python run.py --data ~/data/ml-20m --logdir ~/experiments/ml-20m --config confige/examples/slim.gin
 ```
 
 ## Requirements
