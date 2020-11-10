@@ -1,0 +1,7 @@
+# MF with ALS
+
+experiment.Recommender = @ALSRecommender
+
+ALSRecommender.latent_dim = 100
+ALSRecommender.l2_reg = 10
+ALSRecommender.n_iter = 10
