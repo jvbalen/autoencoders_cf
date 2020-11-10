@@ -2,9 +2,7 @@
 
 Experiments with auto-encoders for collaborative filtering.
 
-This repo is based on [`vae_cf`](https://github.com/dawenl/vae_cf) by Liang, author of [1]. Most of the TensorFlow model code originated there, as well as much of the training and evaluation code.
-
-It also incorporates some refactoring due to [`vae-cf-pytorch`](https://github.com/belepi93/vae-cf-pytorch) by `belepi93`.
+This repo incorporates code from [`vae_cf`](https://github.com/dawenl/vae_cf) by Liang, author of [1]. Most of the TensorFlow model code originated there, as well as much of the training and evaluation code. It also incorporates some refactoring due to [`vae-cf-pytorch`](https://github.com/belepi93/vae-cf-pytorch) by `belepi93`.
 
 
 ## Models
