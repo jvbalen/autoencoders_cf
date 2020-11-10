@@ -38,7 +38,7 @@ class Logger(object):
                 f.write(f'{metric},{value}\n')
             if config is not None:
                 for line in config.split('\n'):
-                    if line.startswith('#'):
+                    if line.startswith('#') or len(line) == 0:
                         continue
                     f.write(','.join(line.split(' = ')) + '\n')
 

@@ -17,6 +17,7 @@ class BaseRecommender(object):
         Params:
         - log_dir (str): logging directory
         - batch_size (int): prediction batch size
+        - exact_batches (bool): if True, generate only batches of exactly `batch_size`
         """
         self.logger = Logger(log_dir) if log_dir else None
         self.batch_size = batch_size
@@ -35,7 +36,11 @@ class BaseRecommender(object):
     def evaluate(self, x_val, y_val, other_metrics=None, step=None, test=False):
         """Evaluate model on observed and unobserved validation data x_val, y_val
 
-        Use dict parameter `other_metrics` to add/replace metrics
+        - x_val (2d-array or similar): input data
+        - y_val (2d-array or similar): targets
+        - other_metrics (dict): anny additional metrics in this dictionary will also be logged
+        - step (int): global evaluation step, used in results filename
+        - test (bool): whether data is test data (as opposed to validation)
         """
         prediction_time = 0
         batch_metrics = defaultdict(list)
