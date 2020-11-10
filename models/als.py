@@ -1,4 +1,4 @@
-"""global-local SLIM/EASE variants, such as models with item clusters and user clusters
+"""Recommenders based on Alternating Least Squares optimization
 """
 import time
 from warnings import warn
@@ -10,117 +10,7 @@ from scipy.sparse import issparse, hstack, csr_matrix
 from tqdm import tqdm
 
 from models.base import BaseRecommender
-from util import Clock, prune_global, gen_batch_inds, prune_rows, load_weights
-
-
-@gin.configurable
-class SpLoRecommender(BaseRecommender):
-
-    def __init__(self, log_dir, batch_size=100, weights_path=None, save_weights=True,
-                 latent_dim=200, uv_l2_reg=0.01, uv_updates=3, init_scale=0.1,
-                 update_s=True, l2_reg=100.0, row_nnz=None, target_density=1.0):
-        """'Sparse + Low-rank' recommender. Models:
-            X ~ U @ V.T + X @ S
-        """
-        self.save_weights = save_weights
-        self.latent_dim = latent_dim
-        self.uv_l2_reg = uv_l2_reg
-        self.uv_updates = uv_updates
-        self.init_scale = init_scale
-        self.update_s = update_s
-        self.l2_reg = l2_reg
-        self.row_nnz = row_nnz
-        self.target_density = target_density
-
-        if weights_path:
-            self.S, other = load_weights(weights_path)
-            self.V = other['V']
-            self.U = None
-        else:
-            self.S = None
-            self.U = None
-            self.V = None
-
-        super().__init__(log_dir, batch_size=batch_size)
-
-    def train(self, x_train, y_train, x_val, y_val):
-        """Train and evaluate
-
-        TODO: one more update for U just before S, to ensure we use the same U @ V.T as we'd have at prediction time?
-        TODO: weights W = X so that S focuses on re-ranking? Will be slower, but worth an experiment
-        """
-        verbose = self.logger.verbose if self.logger else False
-        clock = Clock(verbose=verbose)
-        t1 = time.perf_counter()
-
-        if y_train is not None:
-            warn("SLIM is unsupervised, y_train will be ignored")
-        n_users, n_items = x_train.shape
-
-        if self.S is None:
-            self.S = csr_matrix((n_items, n_items))
-        if self.V is None:
-            self.V = np.random.randn(n_items, self.latent_dim) * self.init_scale
-        self.U = np.zeros((n_users, self.latent_dim))  # in case uv_updates = 0
-
-        # update U, V
-        for _ in range(self.uv_updates):
-            clock.interval('Solving for U')
-            batches = gen_batch_inds(n_users, batch_size=self.batch_size)
-            y_batched = (x_train[inds].toarray() - x_train[inds].toarray() @ self.S for inds in batches)
-            u_batched = [solve_ols(self.V, y_batch.T, l2_reg=self.uv_l2_reg).T for y_batch in y_batched]
-            self.U = np.vstack(u_batched)
-            clock.interval('Solving for V')
-            batches = gen_batch_inds(n_items, batch_size=self.batch_size)
-            y_batched = (x_train[:, inds].toarray() - x_train @ self.S[:, inds].toarray() for inds in batches)
-            v_batched = [solve_ols(self.U, y_batch, l2_reg=self.uv_l2_reg).T for y_batch in y_batched]
-            self.V = np.vstack(v_batched)
-            clock.interval('Evaluating')
-            metrics = self.evaluate(x_val, y_val)
-
-        # update S
-        if self.update_s and self.row_nnz is None:
-            clock.interval('Computing XtX')
-            xtx = x_train.T @ x_train
-            clock.interval('Computing XtX^-1')
-            diag_indices = np.diag_indices(xtx.shape[0])
-            xtx_reg = xtx.copy()
-            xtx_reg[diag_indices] += self.l2_reg
-            xtx_inv = np.linalg.inv(xtx_reg.toarray())
-            clock.interval('Computing XtY')
-            xtu = x_train.T @ self.U
-            xty = xtx - xtu @ self.V.T  # y = (x - u v.T) => x.T y = x.T x - X.T u v.T
-            clock.interval('Computing XtX^-1 @ XtY')
-            b = xtx_inv @ xty
-            clock.interval('Computing S (zero-diag)')
-            self.S = b - xtx_inv * np.diag(b) / np.diag(xtx_inv)  # zero-diag, see Steck 2019
-            clock.interval('Pruning S')
-            self.S = prune_global(self.S, target_density=self.target_density).tocsc()
-        elif self.update_s:
-            clock.interval('Solving for S, using sparse approximation')
-            yt = (x.toarray().flatten() - self.U @ v for x, v in zip(x_train.T, self.V))
-            wt = np.ones(x_train.shape[1])
-            self.S = solve_wols(x_train, yt=yt, wt=wt, l2_reg=self.l2_reg, row_nnz=self.row_nnz)
-            if self.target_density < 1.0:
-                self.S = prune_global(self.S, target_density=self.target_density)
-            self.S = self.S.tocsc()
-
-        dt = time.perf_counter() - t1
-        if self.save_weights and self.logger is not None:
-            self.logger.save_weights(self.S, other={'V': self.V})
-
-        density = self.S.size / np.prod(self.S.shape)
-        metrics = self.evaluate(x_val, y_val, other_metrics={'train_time': dt, 'weight_density': density})
-
-        return metrics
-
-    def predict(self, x, y=None,):
-        """Predict scores
-        """
-        u = solve_ols(self.V, x.toarray().T, l2_reg=self.uv_l2_reg).T
-        y_pred = x @ self.S + u @ self.V.T
-
-        return y_pred, np.nan
+from util import Clock, prune_global, prune_rows
 
 
 @gin.configurable
@@ -128,10 +18,21 @@ class ALSRecommender(BaseRecommender):
 
     def __init__(self, log_dir, batch_size=70, save_weights=True,
                  latent_dim=50, n_iter=20, l2_reg=10., init_scale=0.1):
-        """Gobal-local EASE v0
-        - low-rank and high-rank joint linear model
-        - R ~ U @ V + R @ S
-        - no clustering
+        """Alternating Least Squares matrix factorization recommender
+
+        Approximates X as U @ V.T, finds U and V by alternating between solving for U
+        and V using closed-form OLS.
+
+        Parameters:
+        - log_dir (str): logging directory (a new timestamped directory will be created inside of it)
+        - batch_size (int): evaluation batch_size
+        - save_weights (bool): whether to save weights
+        - latent_dim (int): the dimension of the user and item embeddings
+        - n_iter (int): number of alternating least squares steps. Users and items are each updated
+            once on each iteration
+        - l2_reg (float): l2 regularization parameter
+        - init_scale (float): draw initial user and item vectors using a standard-normal distribution
+            with this scale
         """
         self.save_weights = save_weights
         self.latent_dim = latent_dim
@@ -164,8 +65,6 @@ class ALSRecommender(BaseRecommender):
 
     def predict(self, x, y=None):
         """Predict scores
-        NOTE: if you get a dimension mismatch here for the final multiplication,
-        you probably ended up with S (or another var) a matrix (instead of array)
         """
         u = solve_ols(self.V, x.T, l2_reg=self.l2_reg, verbose=False).T
         y_pred = u @ self.V.T
@@ -183,10 +82,11 @@ class WALSRecommender(BaseRecommender):
         """Matrix factorization recommender with weighted square loss, optimized using
         Alternating Least Squares optimization.
 
-        Supports Hu's original weighting scheme (negatives @ 1.0 and positives @ 1.0 + alpha)
-        as well as a new ranking loss-inducing weighting, in which both positives and negatives
-        are weighted according to (an estimate of) the number of discordant pos-neg pairs they
-        are part of, attenuated with exponent `discordance_weighting` in (0, 1].
+        Implementation focused on arbitrary dense weights. Supports Hu's original weighting scheme
+        (negatives @ 1.0 and positives @ 1.0 + alpha) but not efficiently.
+        Also supports experimental ranking loss-inducing weighting, in which both positives and
+        negatives are weighted according to (an estimate of) the number of discordant pos-neg pairs
+        they are part of, attenuated with exponent `discordance_weighting` in (0, 1].
 
         Parameters:
         - log_dir (str): logging directory (a new timestamped directory will be created inside of it)

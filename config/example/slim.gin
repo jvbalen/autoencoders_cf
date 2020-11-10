@@ -1,0 +1,7 @@
+# SLIM
+
+experiment.Recommender = @LinearRecommender
+
+LinearRecommender.weights_fn = @closed_form_slim
+LinearRecommender.target_density = 0.01
+closed_form_slim.l2_reg = 100.0

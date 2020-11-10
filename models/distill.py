@@ -7,8 +7,8 @@ from models.tf import TFRecommender
 class DistilledRecommender(TFRecommender):
 
     def __init__(self, log_dir=None, teacher=None, batch_size=100, n_epochs=10):
-        """Build a sparse, TF-based wide auto-encoder model with given initial sparse weights,
-        and train it to predict the predictions of a *trained* teacher model.
+        """Build a TFRecomender  and train it to predict the predictions of a
+        *trained* teacher model.
         """
         self.teacher = teacher
         super().__init__(log_dir=log_dir, batch_size=batch_size, n_epochs=n_epochs)
