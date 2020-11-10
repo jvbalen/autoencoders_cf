@@ -1,0 +1,14 @@
+
+experiment.Recommender = @DistilledRecommender
+
+DistilledRecommender.teacher = @LinearRecommenderFromFile()
+DistilledRecommender.n_epochs = 30
+LinearRecommenderFromFile.path = '/Users/jan/experiments/autoencoders/slim/weights.npz'
+
+AutoEncoder.loss = "pairwise"
+AutoEncoder.latent_dim = 200
+AutoEncoder.normalize_inputs = False
+AutoEncoder.keep_prob = 1.0
+AutoEncoder.lam = 0.0
+AutoEncoder.tanh = False
+AutoEncoder.lr = 3e-4

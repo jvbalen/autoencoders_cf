@@ -1,0 +1,2 @@
+# python run.py --data ~/data/ml-20m --logdir ~/experiments/distill/ml-20m --config config/distill/ml20m-200-mse.gin
+python run.py --data ~/data/ml-20m --logdir ~/experiments/distill/ml-20m --config config/distill/ml20m-200-pai.gin

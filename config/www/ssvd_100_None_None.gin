@@ -1,0 +1,15 @@
+# Parameters for experiment:
+# ==============================================================================
+experiment.Recommender = @EmbeddingRecommender
+
+# Parameters for EmbeddingRecommender:
+# ==============================================================================
+EmbeddingRecommender.batch_size = 100
+EmbeddingRecommender.embedding_fn = @load_embeddings
+EmbeddingRecommender.save_embeddings = False
+EmbeddingRecommender.item_nnz = None
+
+# Parameters for cholesky_embeddings:
+# ==============================================================================
+load_embeddings.path = '/Users/jan/experiments/www/ml-20m/20201020-023424/weights.npz'
+load_embeddings.truncate = None
