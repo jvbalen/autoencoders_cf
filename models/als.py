@@ -167,21 +167,21 @@ class WALSRecommender(BaseRecommender):
             y = u @ self.V.T
             y_pos, y_neg = y[pos], y[neg]
 
-            keep_prob = self.n_pairs / np.sum(neg)
             y_neg_sample = np.percentile(y_neg, q=np.linspace(0, 100, self.n_pairs))
-            discordance = y_pos[None, :] < y_neg_sample[:, None]
-            w[pos] = (np.sum(discordance, axis=0) / keep_prob + self.min_weight) ** self.discordance_weighting
+            discordance_sample = y_pos[None, :] < y_neg_sample[:, None]
+            discordance = discordance_sample * np.sum(neg) / self.n_pairs
+            w[pos] = (np.sum(discordance, axis=0) + self.min_weight) ** self.discordance_weighting
             if self.cache_scores:
                 self.user_stats['y_neg'].append(y_neg_sample)
                 self.user_stats['n_neg'].append(np.sum(neg))
 
-            keep_prob = self.n_pairs / np.sum(pos)
-            y_pos_sample = np.percentile(y[pos], q=np.linspace(0, 100, self.n_pairs))
-            discordance = y_neg[None, :] > y_pos_sample[:, None]
-            w[neg] = (np.sum(discordance, axis=0) / keep_prob + self.min_weight) ** self.discordance_weighting
-            if self.cache_scores:
-                self.user_stats['y_pos'].append(y_pos_sample)
+            y_pos_sample = np.percentile(y_pos, q=np.linspace(0, 100, self.n_pairs))
+            discordance_sample = y_neg[None, :] > y_pos_sample[:, None]
+            discordance = discordance_sample * np.sum(pos) / self.n_pairs
+            w[neg] = (np.sum(discordance, axis=0) + self.min_weight) ** self.discordance_weighting
+            if self.cache_scores and self.neg_disc:
                 self.user_stats['n_pos'].append(np.sum(pos))
+                self.user_stats['y_pos'].append(y_pos_sample)
         else:
             w = 1.0 + self.alpha * pos
         if cache_weights:
@@ -209,18 +209,19 @@ class WALSRecommender(BaseRecommender):
             w = np.ones(n_users)
             y = self.U @ v
             y_pos, y_neg = y[pos], y[neg]
+
             y_neg_sample = np.array(self.user_stats['y_neg'])[pos]
-            discordance = y_pos[:, None] < y_neg_sample  # (n_pos, None) x (n_pos, n_pairs)
-            discordance = discordance * np.array(self.user_stats['n_neg'])[pos, None] / self.n_pairs
+            discordance_sample = y_pos[:, None] < y_neg_sample  # (n_pos, None) x (n_pos, n_pairs)
+            discordance = discordance_sample * np.array(self.user_stats['n_neg'])[pos, None] / self.n_pairs
             w[pos] = (np.sum(discordance, axis=1) + self.min_weight) ** self.discordance_weighting
 
             y_pos_sample = np.array(self.user_stats['y_pos'])[neg]
-            discordance = y_neg[:, None] > y_pos_sample  # (n_neg, None) x (n_neg, n_pairs)
-            discordance = discordance * np.array(self.user_stats['n_pos'])[neg, None] / self.n_pairs
+            discordance_sample = y_neg[:, None] > y_pos_sample  # (n_neg, None) x (n_neg, n_pairs)
+            discordance = discordance_sample * np.array(self.user_stats['n_pos'])[neg, None] / self.n_pairs
             w[neg] = (np.sum(discordance, axis=1) + self.min_weight) ** self.discordance_weighting
         else:
-            w_neg = np.array(self.user_stats['w_neg'])
-            w_pos = np.array(self.user_stats['w_pos'])
+            w_neg = np.array(self.user_stats['w_neg']) if self.user_stats['w_neg'] else 1.0
+            w_pos = np.array(self.user_stats['w_pos']) if self.user_stats['w_pos'] else 1.0 + self.alpha
             w = w_neg * neg + w_pos * pos
         if np.random.rand() < print_prob:
             rand_pos, rand_neg = np.random.choice(np.sum(pos), 5), np.random.choice(np.sum(neg), 5)
@@ -349,6 +350,11 @@ def solve_wols(x, yt, wt, l2_reg=100, row_nnz=None, n_steps=None, verbose=0):
 
     Choose verbose == 1 to show a progress bar, verbose == 2 for
     more information (min, max, isfinite) on the learned weights
+
+    NOTE: consider rewriting so that this inner loop refuses to do
+    work and returns the existing b when
+        np.sum(wt_i) < np.mean(np.sum(wt_i) for wt_i in wt "so far")
+    NOTE: function doesn't currently know the existing b
     """
     if n_steps is None:
         try:
@@ -361,15 +367,18 @@ def solve_wols(x, yt, wt, l2_reg=100, row_nnz=None, n_steps=None, verbose=0):
         wt_i = wt_i.toarray().flatten() if issparse(wt_i) else np.ravel(wt_i)
         yt_i = yt_i.toarray().flatten() if issparse(yt_i) else np.ravel(yt_i)
 
-        xty = x.T @ (wt_i * yt_i)
+        x_ = x[wt_i != 0]
+        yt_i = yt_i[wt_i != 0]
+        wt_i = wt_i[wt_i != 0]
+        xty = x_.T @ (wt_i * yt_i)
         if row_nnz is None:
-            xtx = gram_matrix(x, wt_i)
+            xtx = gram_matrix(x_, wt_i)
         else:
             # limit cols of x to row_nnz "neighbors" based on x.T @ w @ y
             feat_relevance = np.abs(xty)
             feat_relevance[i] = 0.0  # zero-diag (NOTE: only makes sense for learning similarities)
             feat_selection = np.argpartition(feat_relevance, kth=-row_nnz)[-row_nnz:]
-            xtx = gram_matrix(x[:, feat_selection], w=wt_i)
+            xtx = gram_matrix(x_[:, feat_selection], w=wt_i)
             xty = xty[feat_selection]
         if issparse(xtx):
             xtx = xtx.toarray()
