@@ -161,24 +161,26 @@ class WALSRecommender(BaseRecommender):
         """
         pos = (x > 0).toarray().flatten()
         neg = np.logical_not(pos)
-        if self.discordance_weighting:
+        if u is not None and self.discordance_weighting:
             n_items = x.shape[1]
             w = np.ones(n_items)
             y = u @ self.V.T
             y_pos, y_neg = y[pos], y[neg]
 
             y_neg_sample = np.percentile(y_neg, q=np.linspace(0, 100, self.n_pairs))
-            discordance_sample = y_pos[None, :] < y_neg_sample[:, None]
-            discordance = discordance_sample * np.sum(neg) / self.n_pairs
-            w[pos] = (np.sum(discordance, axis=0) + self.min_weight) ** self.discordance_weighting
+            discordance = y_pos[None, :] < y_neg_sample[:, None]
+            # discordance = discordance * np.sum(neg) / self.n_pairs  # TODO: UNDO
+            # w[pos] = (np.sum(discordance, axis=0) + self.min_weight) ** self.discordance_weighting
+            w[pos] = self.alpha * np.sum(discordance, axis=0) ** self.discordance_weighting
             if self.cache_scores:
                 self.user_stats['y_neg'].append(y_neg_sample)
                 self.user_stats['n_neg'].append(np.sum(neg))
 
             y_pos_sample = np.percentile(y_pos, q=np.linspace(0, 100, self.n_pairs))
-            discordance_sample = y_neg[None, :] > y_pos_sample[:, None]
-            discordance = discordance_sample * np.sum(pos) / self.n_pairs
-            w[neg] = (np.sum(discordance, axis=0) + self.min_weight) ** self.discordance_weighting
+            discordance = y_neg[None, :] > y_pos_sample[:, None]
+            # discordance = discordance * np.sum(pos) / self.n_pairs  # TODO: UNDO
+            # w[neg] = (np.sum(discordance, axis=0) + self.min_weight) ** self.discordance_weighting
+            w[neg] = 1.0 + np.sum(discordance, axis=0) ** self.discordance_weighting
             if self.cache_scores and self.neg_disc:
                 self.user_stats['n_pos'].append(np.sum(pos))
                 self.user_stats['y_pos'].append(y_pos_sample)
@@ -195,10 +197,6 @@ class WALSRecommender(BaseRecommender):
             print(f'for current user, w[pos]{rand_pos.tolist()} = {w[pos][rand_pos]}')
 
         return w
-
-    def item_weights_eval(self, x, u, print_prob=0.0003):
-
-        return self.item_weights(x, u, print_prob=print_prob, cache_weights=False)
 
     def user_weights(self, x, v, print_prob=0.0003):
 
@@ -220,9 +218,10 @@ class WALSRecommender(BaseRecommender):
             discordance = discordance_sample * np.array(self.user_stats['n_pos'])[neg, None] / self.n_pairs
             w[neg] = (np.sum(discordance, axis=1) + self.min_weight) ** self.discordance_weighting
         else:
-            w_neg = np.array(self.user_stats['w_neg']) if self.user_stats['w_neg'] else 1.0
-            w_pos = np.array(self.user_stats['w_pos']) if self.user_stats['w_pos'] else 1.0 + self.alpha
-            w = w_neg * neg + w_pos * pos
+            # w_neg = np.array(self.user_stats['w_neg']) if self.user_stats['w_neg'] else 1.0
+            # w_pos = np.array(self.user_stats['w_pos']) if self.user_stats['w_pos'] else 1.0 + self.alpha
+            # w = w_neg * neg + w_pos * pos  # TODO: UNDO
+            w = 1.0 + self.alpha * pos
         if np.random.rand() < print_prob:
             rand_pos, rand_neg = np.random.choice(np.sum(pos), 5), np.random.choice(np.sum(neg), 5)
             print(f'for current item, w[neg]{rand_neg.tolist()} = {w[neg][rand_neg]}')
@@ -230,13 +229,10 @@ class WALSRecommender(BaseRecommender):
 
         return w
 
-    def predict(self, x, y=None, refine_steps=1, print_prob=0.1):
-        w_neg = np.mean(self.user_stats['w_neg'])
-        w_pos = np.mean(self.user_stats['w_pos'])
-        wt = (w_neg + (w_pos - w_neg) * x_col.toarray().flatten() for x_col in x)
-        u = solve_wols(self.V, yt=x, wt=wt, l2_reg=self.l2_reg, verbose=False).T
-        for _ in range(refine_steps):
-            wt = map(self.item_weights_eval, x, u)
+    def predict(self, x, y=None, n_iter=1, print_prob=0.1):
+        u = [None] * x.shape[0]
+        for _ in range(n_iter):
+            wt = (self.item_weights(x_col, None, cache_weights=False) for x_col in x)
             u = solve_wols(self.V, yt=x, wt=wt, l2_reg=self.l2_reg, verbose=False).T
         y_pred = u @ self.V.T
         if np.random.rand() < print_prob:
@@ -367,18 +363,15 @@ def solve_wols(x, yt, wt, l2_reg=100, row_nnz=None, n_steps=None, verbose=0):
         wt_i = wt_i.toarray().flatten() if issparse(wt_i) else np.ravel(wt_i)
         yt_i = yt_i.toarray().flatten() if issparse(yt_i) else np.ravel(yt_i)
 
-        x_ = x[wt_i != 0]
-        yt_i = yt_i[wt_i != 0]
-        wt_i = wt_i[wt_i != 0]
-        xty = x_.T @ (wt_i * yt_i)
+        xty = x.T @ (wt_i * yt_i)
         if row_nnz is None:
-            xtx = gram_matrix(x_, wt_i)
+            xtx = gram_matrix(x, wt_i)
         else:
             # limit cols of x to row_nnz "neighbors" based on x.T @ w @ y
             feat_relevance = np.abs(xty)
             feat_relevance[i] = 0.0  # zero-diag (NOTE: only makes sense for learning similarities)
             feat_selection = np.argpartition(feat_relevance, kth=-row_nnz)[-row_nnz:]
-            xtx = gram_matrix(x_[:, feat_selection], w=wt_i)
+            xtx = gram_matrix(x[:, feat_selection], w=wt_i)
             xty = xty[feat_selection]
         if issparse(xtx):
             xtx = xtx.toarray()
