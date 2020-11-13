@@ -218,10 +218,9 @@ class WALSRecommender(BaseRecommender):
             discordance = discordance_sample * np.array(self.user_stats['n_pos'])[neg, None] / self.n_pairs
             w[neg] = (np.sum(discordance, axis=1) + self.min_weight) ** self.discordance_weighting
         else:
-            # w_neg = np.array(self.user_stats['w_neg']) if self.user_stats['w_neg'] else 1.0
-            # w_pos = np.array(self.user_stats['w_pos']) if self.user_stats['w_pos'] else 1.0 + self.alpha
-            # w = w_neg * neg + w_pos * pos  # TODO: UNDO
-            w = 1.0 + self.alpha * pos
+            w_neg = np.array(self.user_stats['w_neg']) if self.user_stats['w_neg'] else 1.0
+            w_pos = np.array(self.user_stats['w_pos']) if self.user_stats['w_pos'] else 1.0 + self.alpha
+            w = w_neg * neg + w_pos * pos
         if np.random.rand() < print_prob:
             rand_pos, rand_neg = np.random.choice(np.sum(pos), 5), np.random.choice(np.sum(neg), 5)
             print(f'for current item, w[neg]{rand_neg.tolist()} = {w[neg][rand_neg]}')
