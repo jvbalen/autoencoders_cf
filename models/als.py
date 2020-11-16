@@ -12,6 +12,8 @@ from tqdm import tqdm
 from models.base import BaseRecommender
 from util import Clock, prune_global, prune_rows
 
+np.seterr(invalid='raise')
+
 
 @gin.configurable
 class ALSRecommender(BaseRecommender):
@@ -77,8 +79,8 @@ class WALSRecommender(BaseRecommender):
 
     def __init__(self, log_dir, batch_size=70, save_weights=True,
                  latent_dim=50, n_iter=20, l2_reg=10., init_scale=0.1,
-                 alpha=1.0, discordance_weighting=0.0, n_pairs=None,
-                 min_weight=1.0, cache_scores=False):
+                 negative_target=0.0, alpha=1.0, discordance_weighting=0.0,
+                 rectify_weights=False, cache_stats=False):
         """Matrix factorization recommender with weighted square loss, optimized using
         Alternating Least Squares optimization.
 
@@ -99,15 +101,9 @@ class WALSRecommender(BaseRecommender):
         - init_scale (float): draw initial user and item vectors using a standard-normal distribution
             with this scale
         - alpha (float): if discordance_weighting == 0, use Hu's W-ALS weighting with this alpha
-        - discordance_weighting (float): if discordance_weighting > 0, ignore alpha and weight
-            positives and negatives according to (an estimate of) the number of discordant pos-neg
-            pairs they are part of, attenuated with exponent `discordance_weighting` in (0, 1].
-            Note: discordance weighting is used during user factor updates only, unless
-            `cache_scores` is True.
-        - n_pairs (int): maximum number of pos-neg pairs to check for each positive or negative
-            when estimating the number of discordant pos-neg pairs
-        - cache_scores (bool): if True, use discordance weighting during item factor
-            updates as well, using a cached sample of pos and negative item scores for each user
+        - discordance_weighting (float):
+        - cache_statistics (bool): if True, use discordance weighting during item factor
+            updates as well, using a cached statistics of pos and negative item scores for each user
         """
         self.save_weights = save_weights
         self.latent_dim = latent_dim
@@ -116,12 +112,15 @@ class WALSRecommender(BaseRecommender):
         self.init_scale = init_scale
         self.alpha = alpha
         self.discordance_weighting = discordance_weighting
-        self.cache_scores = cache_scores
-        self.min_weight = min_weight
-        self.n_pairs = n_pairs
-        self.user_stats = defaultdict(list)
+        self.cache_stats = cache_stats
+        self.rectify_weights = rectify_weights
+        self.negative_target = negative_target
+
         self.U = None
         self.V = None
+        self.user_stats = defaultdict(list)
+        self.eps = 0.05 * np.sqrt(2 * np.pi) * self.init_scale ** 2 * np.sqrt(self.latent_dim) / 2
+        # eps such that only 5 percent of scores is set to eps or -eps at initialization
 
         super().__init__(log_dir, batch_size=batch_size)
 
@@ -130,6 +129,7 @@ class WALSRecommender(BaseRecommender):
         """
         if y_train is not None:
             warn("SLIM is unsupervised, y_train will be ignored")
+        n_users, n_items = x_train.shape
 
         t1 = time.perf_counter()
         self.U = np.random.randn(x_train.shape[0], self.latent_dim) * self.init_scale
@@ -138,13 +138,13 @@ class WALSRecommender(BaseRecommender):
             print(f'Iteration {i + 1}/{self.n_iter}')
             self.user_stats = defaultdict(list)
 
+            yt = map(self.make_y, x_train)
             wt = map(self.item_weights, x_train, self.U)
-            self.U = solve_wols(self.V, yt=x_train, wt=wt, l2_reg=self.l2_reg, verbose=True).T
+            self.U = solve_wols(self.V, yt=yt, wt=wt, l2_reg=self.l2_reg, n_steps=n_users, verbose=True).T
+            yt = map(self.make_y, x_train.T)
             wt = map(self.user_weights, x_train.T, self.V)
-            self.V = solve_wols(self.U, yt=x_train.T, wt=wt, l2_reg=self.l2_reg, verbose=True).T
-            other_metrics = {'mean_wpos': np.mean(self.user_stats['w_pos']),
-                             'mean_wneg': np.mean(self.user_stats['w_neg']),
-                             'mean_trailing_negatives': np.mean(self.user_stats['trailing_negatives'])}
+            self.V = solve_wols(self.U, yt=yt, wt=wt, l2_reg=self.l2_reg, n_steps=n_items, verbose=True).T
+            other_metrics = {'mean_' + k: np.mean(v) for k, v in self.user_stats.items()}
             self.evaluate(x_val, y_val, step=i+1, other_metrics=other_metrics)
         dt = time.perf_counter() - t1
 
@@ -154,7 +154,7 @@ class WALSRecommender(BaseRecommender):
 
         return metrics
 
-    def item_weights(self, x, u, print_prob=0.00003, cache_weights=True):
+    def item_weights(self, x, u, print_prob=0.00003, test_users=False, normalize=True):
         """
         TODO: Discordance weighting (with cache_scores = False) currently
         appears to cause w_neg < 1 most of the time. Why?
@@ -167,59 +167,73 @@ class WALSRecommender(BaseRecommender):
             y = u @ self.V.T
             y_pos, y_neg = y[pos], y[neg]
 
-            y_neg_sample = np.percentile(y_neg, q=np.linspace(0, 100, self.n_pairs))
-            discordance = y_pos[None, :] < y_neg_sample[:, None]
-            # discordance = discordance * np.sum(neg) / self.n_pairs  # TODO: UNDO
-            # w[pos] = (np.sum(discordance, axis=0) + self.min_weight) ** self.discordance_weighting
-            w[pos] = self.alpha * np.sum(discordance, axis=0) ** self.discordance_weighting
-            if self.cache_scores:
-                self.user_stats['y_neg'].append(y_neg_sample)
-                self.user_stats['n_neg'].append(np.sum(neg))
-
-            y_pos_sample = np.percentile(y_pos, q=np.linspace(0, 100, self.n_pairs))
-            discordance = y_neg[None, :] > y_pos_sample[:, None]
-            # discordance = discordance * np.sum(pos) / self.n_pairs  # TODO: UNDO
-            # w[neg] = (np.sum(discordance, axis=0) + self.min_weight) ** self.discordance_weighting
-            w[neg] = 1.0 + np.sum(discordance, axis=0) ** self.discordance_weighting
-            if self.cache_scores and self.neg_disc:
-                self.user_stats['n_pos'].append(np.sum(pos))
-                self.user_stats['y_pos'].append(y_pos_sample)
+            if np.all(y_pos == y_pos[0]):  # DEBUG
+                print(f'all(y_pos == y_pos[0]) = True, sum(pos) = {np.sum(pos)}, y_pos[0] = {y_pos[0]}, u = {u}.')
+            if np.all(y_neg == y_neg[0]):  # DEBUG
+                print(f'all(y_neg == y_neg[0]) = True, sum(neg) = {np.sum(neg)}, y_neg[0] = {y_neg[0]}, u = {u}.')
+            n_pos, m_pos, s_pos = np.sum(pos), np.mean(y_pos), np.std(y_pos)
+            n_neg, m_neg, s_neg = np.sum(neg), np.mean(y_neg), np.std(y_neg)
+            w_pos = np.exp(-0.5 * (y_pos - m_neg)**2 / s_neg ** 2) / s_neg
+            w_neg = np.exp(-0.5 * (y_neg - m_pos)**2 / s_pos ** 2) / s_pos
+            w_pos = w_pos / self.apply_eps(1 - y_pos)
+            w_neg = w_neg / self.apply_eps(y_neg - self.negative_target)
+            w[pos] = (n_neg / n_items * w_pos) ** self.discordance_weighting
+            w[neg] = (n_pos / n_items * w_neg) ** self.discordance_weighting
+            if normalize:
+                w = w / w.mean()
+            if self.cache_stats and not test_users:
+                self.update_user_stats({'n_pos': n_pos, 'm_pos': m_pos, 's_pos': s_pos,
+                                        'n_neg': n_neg, 'm_neg': m_neg, 's_neg': s_neg})
+            if w[neg].mean() / w[pos].mean() > 1e6:  # DEBUG)
+                import pdb; pdb.set_trace()
         else:
             w = 1.0 + self.alpha * pos
-        if cache_weights:
-            self.user_stats['w_pos'].append(np.median(w[pos]))
-            self.user_stats['w_neg'].append(np.median(w[neg]))
-            self.user_stats['trailing_negatives'].append(
-                np.sum(w[neg] == self.min_weight ** self.discordance_weighting))
+        if not test_users:
+            self.update_user_stats({'w_pos_m': w[pos].mean(), 'w_pos_mx': w[pos].max(), 'w_pos_0': (w[pos] == 0).sum(),
+                                    'w_neg_m': w[neg].mean(), 'w_neg_mx': w[neg].max(), 'w_neg_0': (w[neg] == 0).sum()})
         if np.random.rand() < print_prob:
             rand_pos, rand_neg = np.random.choice(np.sum(pos), 5), np.random.choice(np.sum(neg), 5)
             print(f'for current user, w[neg]{rand_neg.tolist()} = {w[neg][rand_neg]}')
             print(f'for current user, w[pos]{rand_pos.tolist()} = {w[pos][rand_pos]}')
+            print({k: v[-1] for k, v in self.user_stats.items()})
 
         return w
+
+    def update_user_stats(self, user_stats):
+
+        for k, v in user_stats.items():
+            self.user_stats[k].append(v)
+
+    def apply_eps(self, w):
+
+        if self.rectify_weights:
+            w[w < 0] = 0.0
+        return np.sign(w) * np.maximum(np.abs(w), self.eps) + self.eps * (w == 0).astype(w.dtype)
 
     def user_weights(self, x, v, print_prob=0.0003):
 
         pos = (x > 0).toarray().flatten()
         neg = np.logical_not(pos)
-        if self.cache_scores:
+        if self.cache_stats:
             n_users = x.shape[1]
+            n_items = self.V.shape[0]
             w = np.ones(n_users)
             y = self.U @ v
             y_pos, y_neg = y[pos], y[neg]
 
-            y_neg_sample = np.array(self.user_stats['y_neg'])[pos]
-            discordance_sample = y_pos[:, None] < y_neg_sample  # (n_pos, None) x (n_pos, n_pairs)
-            discordance = discordance_sample * np.array(self.user_stats['n_neg'])[pos, None] / self.n_pairs
-            w[pos] = (np.sum(discordance, axis=1) + self.min_weight) ** self.discordance_weighting
-
-            y_pos_sample = np.array(self.user_stats['y_pos'])[neg]
-            discordance_sample = y_neg[:, None] > y_pos_sample  # (n_neg, None) x (n_neg, n_pairs)
-            discordance = discordance_sample * np.array(self.user_stats['n_pos'])[neg, None] / self.n_pairs
-            w[neg] = (np.sum(discordance, axis=1) + self.min_weight) ** self.discordance_weighting
+            n_pos, m_pos, s_pos = map(np.array,
+                                      [self.user_stats['n_pos'], self.user_stats['m_pos'], self.user_stats['s_pos']])
+            n_neg, m_neg, s_neg = map(np.array,
+                                      [self.user_stats['n_neg'], self.user_stats['m_neg'], self.user_stats['s_neg']])
+            w_pos = np.exp(-(y_pos - m_neg[pos])**2 / s_neg[pos] ** 2) / s_neg[pos]
+            w_neg = np.exp(-(y_neg - m_pos[neg])**2 / s_pos[neg] ** 2) / s_pos[neg]
+            w_pos = w_pos / self.apply_eps(1 - y_pos)
+            w_neg = w_neg / self.apply_eps(y_neg - self.negative_target)
+            w[pos] = (n_neg[pos] / n_items * w_pos) ** self.discordance_weighting
+            w[neg] = (n_pos[neg] / n_items * w_neg) ** self.discordance_weighting
         else:
-            w_neg = np.array(self.user_stats['w_neg']) if self.user_stats['w_neg'] else 1.0
-            w_pos = np.array(self.user_stats['w_pos']) if self.user_stats['w_pos'] else 1.0 + self.alpha
+            w_neg = np.array(self.user_stats.get('w_neg_m', 1.0))
+            w_pos = np.array(self.user_stats.get('w_pos_m', 1.0 + self.alpha))
             w = w_neg * neg + w_pos * pos
         if np.random.rand() < print_prob:
             rand_pos, rand_neg = np.random.choice(np.sum(pos), 5), np.random.choice(np.sum(neg), 5)
@@ -228,16 +242,23 @@ class WALSRecommender(BaseRecommender):
 
         return w
 
-    def predict(self, x, y=None, n_iter=1, print_prob=0.1):
-        u = [None] * x.shape[0]
+    def make_y(self, x):
+
+        if self.negative_target == 0:
+            return x
+        y = x.toarray() if issparse(x) else x.copy()
+        y[y == 0] = self.negative_target
+
+        return y
+
+    def predict(self, x, y=None, n_iter=1):
+        n_users = x.shape[0]
+        u = [None] * n_users
         for _ in range(n_iter):
-            wt = (self.item_weights(x_col, None, cache_weights=False) for x_col in x)
-            u = solve_wols(self.V, yt=x, wt=wt, l2_reg=self.l2_reg, verbose=False).T
+            yt = map(self.make_y, x)
+            wt = (self.item_weights(x_, u_, test_users=True) for x_, u_ in zip(x, u))
+            u = solve_wols(self.V, yt=yt, wt=wt, l2_reg=self.l2_reg, n_steps=n_users, verbose=False).T
         y_pred = u @ self.V.T
-        if np.random.rand() < print_prob:
-            i = np.random.choice(y_pred.shape[0])
-            yi = y_pred[i]
-            print(f'for current batch, y_pred[{i}]: min, median, max = {np.min(yi), np.median(yi), np.max(yi)}')
 
         return y_pred, np.nan
 
