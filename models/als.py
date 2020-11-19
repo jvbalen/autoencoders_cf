@@ -7,6 +7,7 @@ from collections import defaultdict
 import gin
 import numpy as np
 from scipy.sparse import issparse, hstack, csr_matrix
+from scipy.stats import norm, cauchy
 from tqdm import tqdm
 
 from models.base import BaseRecommender
@@ -80,7 +81,7 @@ class WALSRecommender(BaseRecommender):
     def __init__(self, log_dir, batch_size=70, save_weights=True,
                  latent_dim=50, n_iter=20, l2_reg=10., init_scale=0.1,
                  negative_target=0.0, alpha=1.0, discordance_weighting=0.0,
-                 rectify_weights=False, cache_stats=False):
+                 rectify_weights=False, cached_weights=False, embeddings_path=None):
         """Matrix factorization recommender with weighted square loss, optimized using
         Alternating Least Squares optimization.
 
@@ -112,9 +113,10 @@ class WALSRecommender(BaseRecommender):
         self.init_scale = init_scale
         self.alpha = alpha
         self.discordance_weighting = discordance_weighting
-        self.cache_stats = cache_stats
+        self.cached_weights = cached_weights
         self.rectify_weights = rectify_weights
         self.negative_target = negative_target
+        self.embeddings_path = embeddings_path
 
         self.U = None
         self.V = None
@@ -128,74 +130,101 @@ class WALSRecommender(BaseRecommender):
         """Train and evaluate
         """
         if y_train is not None:
-            warn("SLIM is unsupervised, y_train will be ignored")
+            warn("WALS is unsupervised, y_train will be ignored")
         n_users, n_items = x_train.shape
 
         t1 = time.perf_counter()
-        self.U = np.random.randn(x_train.shape[0], self.latent_dim) * self.init_scale
-        self.V = np.random.randn(x_train.shape[1], self.latent_dim) * self.init_scale
+        if self.embeddings_path:
+            npz_data = np.load(self.embeddings_path)
+            self.U, self.V = npz_data['U'], npz_data['V']
+        else:
+            self.U = np.random.randn(x_train.shape[0], self.latent_dim) * self.init_scale
+            self.V = np.random.randn(x_train.shape[1], self.latent_dim) * self.init_scale
         for i in range(self.n_iter):
             print(f'Iteration {i + 1}/{self.n_iter}')
             self.user_stats = defaultdict(list)
 
+            print(f'Updating user vectors...')
             yt = map(self.make_y, x_train)
             wt = map(self.item_weights, x_train, self.U)
             self.U = solve_wols(self.V, yt=yt, wt=wt, l2_reg=self.l2_reg, n_steps=n_users, verbose=True).T
+
+            print(f'Updating item vectors...')
             yt = map(self.make_y, x_train.T)
             wt = map(self.user_weights, x_train.T, self.V)
             self.V = solve_wols(self.U, yt=yt, wt=wt, l2_reg=self.l2_reg, n_steps=n_items, verbose=True).T
+
+            print(f'Evaluating...')
             other_metrics = {'mean_' + k: np.mean(v) for k, v in self.user_stats.items()}
             self.evaluate(x_val, y_val, step=i+1, other_metrics=other_metrics)
-        dt = time.perf_counter() - t1
+            if self.save_weights and self.logger is not None:
+                self.logger.save_weights(None, other={'U': self.U, 'V': self.V})
 
+        dt = time.perf_counter() - t1
         metrics = self.evaluate(x_val, y_val, other_metrics={'train_time': dt})
-        if self.save_weights and self.logger is not None:
-            self.logger.save_weights(None, other={'U': self.U, 'V': self.V})
 
         return metrics
 
-    def item_weights(self, x, u, print_prob=0.00003, test_users=False, normalize=True):
+    def item_weights(self, x, u, test_users=False):
         """
         TODO: Discordance weighting (with cache_scores = False) currently
         appears to cause w_neg < 1 most of the time. Why?
         """
         pos = (x > 0).toarray().flatten()
-        neg = np.logical_not(pos)
         if u is not None and self.discordance_weighting:
-            n_items = x.shape[1]
-            w = np.ones(n_items)
             y = u @ self.V.T
-            y_pos, y_neg = y[pos], y[neg]
-
-            if np.all(y_pos == y_pos[0]):  # DEBUG
-                print(f'all(y_pos == y_pos[0]) = True, sum(pos) = {np.sum(pos)}, y_pos[0] = {y_pos[0]}, u = {u}.')
-            if np.all(y_neg == y_neg[0]):  # DEBUG
-                print(f'all(y_neg == y_neg[0]) = True, sum(neg) = {np.sum(neg)}, y_neg[0] = {y_neg[0]}, u = {u}.')
-            n_pos, m_pos, s_pos = np.sum(pos), np.mean(y_pos), np.std(y_pos)
-            n_neg, m_neg, s_neg = np.sum(neg), np.mean(y_neg), np.std(y_neg)
-            w_pos = np.exp(-0.5 * (y_pos - m_neg)**2 / s_neg ** 2) / s_neg
-            w_neg = np.exp(-0.5 * (y_neg - m_pos)**2 / s_pos ** 2) / s_pos
-            w_pos = w_pos / self.apply_eps(1 - y_pos)
-            w_neg = w_neg / self.apply_eps(y_neg - self.negative_target)
-            w[pos] = (n_neg / n_items * w_pos) ** self.discordance_weighting
-            w[neg] = (n_pos / n_items * w_neg) ** self.discordance_weighting
-            if normalize:
-                w = w / w.mean()
-            if self.cache_stats and not test_users:
-                self.update_user_stats({'n_pos': n_pos, 'm_pos': m_pos, 's_pos': s_pos,
-                                        'n_neg': n_neg, 'm_neg': m_neg, 's_neg': s_neg})
-            if w[neg].mean() / w[pos].mean() > 1e6:  # DEBUG)
-                import pdb; pdb.set_trace()
+            w = self.compute_weights(y, pos, update_stats=not test_users, print_prob=0.00003)
         else:
             w = 1.0 + self.alpha * pos
-        if not test_users:
-            self.update_user_stats({'w_pos_m': w[pos].mean(), 'w_pos_mx': w[pos].max(), 'w_pos_0': (w[pos] == 0).sum(),
-                                    'w_neg_m': w[neg].mean(), 'w_neg_mx': w[neg].max(), 'w_neg_0': (w[neg] == 0).sum()})
-        if np.random.rand() < print_prob:
-            rand_pos, rand_neg = np.random.choice(np.sum(pos), 5), np.random.choice(np.sum(neg), 5)
-            print(f'for current user, w[neg]{rand_neg.tolist()} = {w[neg][rand_neg]}')
-            print(f'for current user, w[pos]{rand_pos.tolist()} = {w[pos][rand_pos]}')
-            print({k: v[-1] for k, v in self.user_stats.items()})
+
+        return w
+
+    def user_weights(self, x, v):
+
+        pos = (x > 0).toarray().flatten()
+        if self.cached_weights:
+            y = self.U @ v
+            w = self.compute_weights(y, pos, user_stats=self.user_stats, print_prob=0.0003)
+        else:
+            w_pos = np.array(self.user_stats.get('w_pos', 1.0 + self.alpha))
+            w_neg = np.array(self.user_stats.get('w_neg', 1.0))
+            w = w_neg + (w_pos - w_neg) * pos
+
+        return w
+
+    def compute_weights(self, y, pos, user_stats=None, update_stats=False, print_prob=1e-4):
+
+        neg = np.logical_not(pos)
+        y_pos, y_neg = y[pos], y[neg]
+
+        # estimate or retrieve parameters of pos, neg distributions
+        if user_stats is None:
+            n_pos, n_neg = pos.sum(), neg.sum()
+            m_pos, s_pos = y_pos.mean(), y_pos.std()
+            q1_neg, q2_neg, q3_neg = np.quantile(y_neg, [0.5, 0.625, 0.875])
+            m_neg, s_neg = q1_neg, q3_neg - q2_neg
+        else:
+            keys = ['n_pos', 'n_neg', 'm_pos', 's_pos', 'm_neg', 's_neg']
+            n_pos, n_neg, m_pos, s_pos, m_neg, s_neg = (np.array(self.user_stats[k]) for k in keys)
+            n_pos, n_neg = n_pos[neg], n_neg[pos]  # see line w[pos] = ...
+
+        p_pos = cauchy(m_neg, s_neg).pdf(y_pos)  # TODO: use numpy (params may be arrays)
+        p_neg = norm(m_pos, s_pos).pdf(y_neg)  # TODO: use numpy (params may be arrays)
+        w_pos = p_pos / self.apply_eps(1 - y_pos)
+        w_neg = p_neg / self.apply_eps(y_neg - self.negative_target)
+        w_pos = (n_neg / n_pos * w_pos) ** self.discordance_weighting
+        w_neg = w_neg ** self.discordance_weighting
+
+        if update_stats:
+            d = {'n_pos': n_pos, 'n_neg': n_neg, 'm_pos': m_pos, 's_pos': s_pos, 'm_neg': m_neg, 's_neg': s_neg,
+                 'p_pos': p_pos.mean(), 'p_neg': p_neg.mean(), 'w_pos': w_pos.mean(), 'w_neg': w_neg.mean()}
+            if np.random.rand() < print_prob:
+                print(d)
+            self.update_user_stats(d)
+
+        w = np.ones_like(y)
+        w[pos] = w_pos
+        w[neg] = w_neg
 
         return w
 
@@ -209,38 +238,6 @@ class WALSRecommender(BaseRecommender):
         if self.rectify_weights:
             w[w < 0] = 0.0
         return np.sign(w) * np.maximum(np.abs(w), self.eps) + self.eps * (w == 0).astype(w.dtype)
-
-    def user_weights(self, x, v, print_prob=0.0003):
-
-        pos = (x > 0).toarray().flatten()
-        neg = np.logical_not(pos)
-        if self.cache_stats:
-            n_users = x.shape[1]
-            n_items = self.V.shape[0]
-            w = np.ones(n_users)
-            y = self.U @ v
-            y_pos, y_neg = y[pos], y[neg]
-
-            n_pos, m_pos, s_pos = map(np.array,
-                                      [self.user_stats['n_pos'], self.user_stats['m_pos'], self.user_stats['s_pos']])
-            n_neg, m_neg, s_neg = map(np.array,
-                                      [self.user_stats['n_neg'], self.user_stats['m_neg'], self.user_stats['s_neg']])
-            w_pos = np.exp(-(y_pos - m_neg[pos])**2 / s_neg[pos] ** 2) / s_neg[pos]
-            w_neg = np.exp(-(y_neg - m_pos[neg])**2 / s_pos[neg] ** 2) / s_pos[neg]
-            w_pos = w_pos / self.apply_eps(1 - y_pos)
-            w_neg = w_neg / self.apply_eps(y_neg - self.negative_target)
-            w[pos] = (n_neg[pos] / n_items * w_pos) ** self.discordance_weighting
-            w[neg] = (n_pos[neg] / n_items * w_neg) ** self.discordance_weighting
-        else:
-            w_neg = np.array(self.user_stats.get('w_neg_m', 1.0))
-            w_pos = np.array(self.user_stats.get('w_pos_m', 1.0 + self.alpha))
-            w = w_neg * neg + w_pos * pos
-        if np.random.rand() < print_prob:
-            rand_pos, rand_neg = np.random.choice(np.sum(pos), 5), np.random.choice(np.sum(neg), 5)
-            print(f'for current item, w[neg]{rand_neg.tolist()} = {w[neg][rand_neg]}')
-            print(f'for current item, w[pos]{rand_pos.tolist()} = {w[pos][rand_pos]}')
-
-        return w
 
     def make_y(self, x):
 
