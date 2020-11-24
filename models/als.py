@@ -117,6 +117,7 @@ class WALSRecommender(BaseRecommender):
         self.rectify_weights = rectify_weights
         self.negative_target = negative_target
         self.embeddings_path = embeddings_path
+        self.epsilon = 1e-3
 
         self.U = None
         self.V = None
@@ -198,27 +199,36 @@ class WALSRecommender(BaseRecommender):
         # estimate or retrieve parameters of pos, neg distributions
         if user_stats is None:
             n_pos, n_neg = pos.sum(), neg.sum()
-            m_pos, s_pos = y_pos.mean(), y_pos.std()
             q1_neg, q2_neg, q3_neg = np.quantile(y_neg, [0.5, 0.625, 0.875])
             m_neg, s_neg = q1_neg, q3_neg - q2_neg
+            q1_neg, q2_neg, q3_neg = np.quantile(y_pos, [0.25, 0.5, 0.75])
+            m_pos, s_pos = q2_neg, (q3_neg - q1_neg) / 2
         else:
             keys = ['n_pos', 'n_neg', 'm_pos', 's_pos', 'm_neg', 's_neg']
             n_pos, n_neg, m_pos, s_pos, m_neg, s_neg = (np.array(self.user_stats[k]) for k in keys)
             n_pos, n_neg = n_pos[neg], n_neg[pos]  # see line w[pos] = ...
 
         p_pos = cauchy(m_neg, s_neg).pdf(y_pos)  # TODO: use numpy (params may be arrays)
-        p_neg = norm(m_pos, s_pos).pdf(y_neg)  # TODO: use numpy (params may be arrays)
-        w_pos = p_pos / (self.apply_eps(1.0 - y_pos, eps=n_pos/n_neg))  # alt: eps = alpha / (n_neg / n_pos + alpha)
-        w_neg = p_neg / (self.apply_eps(y_neg - self.negative_target, eps=n_pos/n_neg))
-        w_pos = n_neg / n_pos * w_pos
+        p_neg = cauchy(m_pos, s_pos).pdf(y_neg)  # TODO: use numpy (params may be arrays)
+        w_pos = p_pos / np.maximum(1. - y_pos, self.epsilon)
+        w_neg = p_neg / np.maximum(y_neg - self.negative_target, self.epsilon)
+
         w_pos = np.sign(w_pos) * np.abs(w_pos) ** self.discordance_weighting
         w_neg = np.sign(w_neg) * np.abs(w_neg) ** self.discordance_weighting
+        cap = np.sqrt(self.alpha + 1) * np.median(w_pos)
+        w_pos[w_pos > cap] = cap
+        cap = np.sqrt(self.alpha + 1) * np.median(w_neg)
+        w_neg[w_neg > cap] = cap
+        w_pos = w_pos / (np.mean(w_pos) + self.epsilon)
+        w_neg = w_neg / (np.mean(w_neg) + self.epsilon)
+        w_pos = (self.alpha + 1) * w_pos
 
         if update_stats:
             d = {'n_pos': n_pos, 'n_neg': n_neg, 'm_pos': m_pos, 's_pos': s_pos, 'm_neg': m_neg, 's_neg': s_neg,
                  'p_pos': p_pos.mean(), 'p_neg': p_neg.mean(), 'w_pos': w_pos.mean(), 'w_neg': w_neg.mean(),
                  'w_ratio': w_pos.mean() / w_neg.mean()}
-            if np.random.rand() < print_prob:
+            # if np.random.rand() < print_prob:
+            if not all(n_pos, n_neg, p_pos.size, p_neg.size, w_pos.size, w_neg.size):
                 print(d)
             self.update_user_stats(d)
 
@@ -232,16 +242,6 @@ class WALSRecommender(BaseRecommender):
 
         for k, v in user_stats.items():
             self.user_stats[k].append(v)
-
-    def apply_eps(self, w, eps):
-
-        if self.rectify_weights:
-            w[w < 0] = 0.0
-        else:
-            w[w < 0] = np.minimum(-eps, w[w < 0])
-        w[w >= 0] = np.maximum(eps, w[w >= 0])
-
-        return w
 
     def make_y(self, x):
 
