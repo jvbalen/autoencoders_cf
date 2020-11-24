@@ -6,7 +6,7 @@ from collections import defaultdict
 
 import gin
 import numpy as np
-from scipy.sparse import issparse, hstack, csr_matrix
+from scipy.sparse import issparse, csr_matrix, hstack, vstack
 from scipy.stats import norm, cauchy
 from tqdm import tqdm
 
@@ -143,15 +143,14 @@ class WALSRecommender(BaseRecommender):
             print(f'Iteration {i + 1}/{self.n_iter}')
             self.user_stats = defaultdict(list)
 
+            print('Updating weights...')
+            alpha = map_csr(self.item_alpha, x_train, self.U)
             print(f'Updating user vectors...')
-            yt = map(self.make_y, x_train)
-            wt = map(self.item_weights, x_train, self.U)
-            self.U = solve_wols(self.V, yt=yt, wt=wt, l2_reg=self.l2_reg, n_steps=n_users, verbose=True).T
-
+            self.U = solve_wols(self.V, yt=x_train, at=alpha, l2_reg=self.l2_reg, n_steps=n_users, verbose=True).T
+            print('Updating weights...')
+            alpha = map_csr(self.item_alpha, x_train, self.U)
             print(f'Updating item vectors...')
-            yt = map(self.make_y, x_train.T)
-            wt = map(self.user_weights, x_train.T, self.V)
-            self.V = solve_wols(self.U, yt=yt, wt=wt, l2_reg=self.l2_reg, n_steps=n_items, verbose=True).T
+            self.V = solve_wols(self.U, yt=x_train.T, at=alpha.T, l2_reg=self.l2_reg, n_steps=n_items, verbose=True).T
 
             print(f'Evaluating...')
             other_metrics = {'median' + k: np.median(v) for k, v in self.user_stats.items()}
@@ -343,7 +342,7 @@ def solve_ols(x, y, l2_reg=100., zero_diag=False, verbose=False):
     return b
 
 
-def solve_wols(x, yt, wt, l2_reg=100, row_nnz=None, n_steps=None, verbose=0):
+def solve_wols(x, yt, at, l2_reg=100, xtx=None):
     """Solve the weighted Ordinary Least Squares problem:
         argmin_B | W * (X B - Y) |^2
     where * denotes element-wise multiplication
@@ -373,48 +372,21 @@ def solve_wols(x, yt, wt, l2_reg=100, row_nnz=None, n_steps=None, verbose=0):
         np.sum(wt_i) < np.mean(np.sum(wt_i) for wt_i in wt "so far")
     NOTE: function doesn't currently know the existing b
     """
-    if n_steps is None:
-        try:
-            n_steps = yt.shape[0]  # get number of items from Y.T
-        except AttributeError:
-            n_steps = len(wt)  # if Y.T is a generator, try W.T
-
-    B_list = []
-    for i, (wt_i, yt_i) in tqdm(enumerate(zip(wt, yt)), total=n_steps, disable=(verbose == 0)):
-        wt_i = wt_i.toarray().flatten() if issparse(wt_i) else np.ravel(wt_i)
-        yt_i = yt_i.toarray().flatten() if issparse(yt_i) else np.ravel(yt_i)
-
-        xty = x.T @ (wt_i * yt_i)
-        if row_nnz is None:
-            xtx = gram_matrix(x, wt_i)
-        else:
-            # limit cols of x to row_nnz "neighbors" based on x.T @ w @ y
-            feat_relevance = np.abs(xty)
-            feat_relevance[i] = 0.0  # zero-diag (NOTE: only makes sense for learning similarities)
-            feat_selection = np.argpartition(feat_relevance, kth=-row_nnz)[-row_nnz:]
-            xtx = gram_matrix(x[:, feat_selection], w=wt_i)
-            xty = xty[feat_selection]
+    def solve_row(yt_i, at_i, x=x, xtx=xtx):
+        a_i, y_i = at_i.T, yt_i.T
+        xty = x.T @ y_i + x.T @ (a_i * y_i)
+        xtx = xtx + gram_matrix(x, w=a_i)
         if issparse(xtx):
             xtx = xtx.toarray()
-
         diag_indices = np.diag_indices(xtx.shape[0])
         xtx[diag_indices] += l2_reg
         xtx_inv = np.linalg.inv(xtx)
-        b = xtx_inv @ xty
+        return xtx_inv @ xty
 
-        if row_nnz is not None:
-            ii, jj = feat_selection, np.zeros_like(feat_selection)
-            b = csr_matrix((b, (ii, jj)), shape=(x.shape[1], 1))
-        B_list.append(b)
+    if xtx is None:
+        xtx = x.T @ x
 
-    B = np.vstack(B_list).T if row_nnz is None else hstack(B_list).T.tocsr()
-    if verbose == 2:
-        isfinite_B = np.isfinite(B.data).mean() if issparse(B) else np.isfinite(B).mean()
-        print(f'    np.isfinite(B.data).mean() = {isfinite_B}')
-        print(f'    np.abs(B).min() = {np.abs(B).min()}')
-        print(f'    np.abs(B).max() = {np.abs(B).max()}')
-
-    return B
+    return map_csr(solve_row, yt, at)
 
 
 def get_gram_neighbors(x, k=100):
@@ -434,3 +406,15 @@ def gram_matrix(x, w=None):
         return x.T @ x
 
     return x.T.multiply(w) @ x if issparse(x) else (x.T * w) @ x
+
+
+def map_csr(fn, *args):
+
+    try:
+        n_steps = args[0].shape[0]  # get number of rows from args[0]
+    except AttributeError:
+        n_steps = None
+    gen = zip(*args) if n_steps is None else tqdm(zip(*args), total=n_steps)
+    csr = vstack(csr_matrix(fn(*args_i)) for args_i in gen)
+
+    return csr
