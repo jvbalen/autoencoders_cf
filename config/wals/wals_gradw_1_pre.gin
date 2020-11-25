@@ -14,7 +14,7 @@ preprocess.item_cap = None
 # ==============================================================================
 WALSRecommender.embeddings_path = '/Users/jan/experiments/wals/gradw/20201117-220157/weights.npz'
 WALSRecommender.alpha = 8.0
-WALSRecommender.beta = 0.5
+WALSRecommender.beta = 1.0
 WALSRecommender.init_scale = 0.1
 WALSRecommender.l2_reg = 10
 WALSRecommender.latent_dim = 50
