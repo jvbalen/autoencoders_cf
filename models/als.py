@@ -81,8 +81,8 @@ class WALSRecommender(BaseRecommender):
 
     def __init__(self, log_dir, batch_size=70, save_weights=True,
                  latent_dim=50, n_iter=20, l2_reg=10., init_scale=0.1,
-                 min_alpha=1.0, med_alpha=10.0, max_alpha=100.0, item_beta=0.0, user_beta=1.0,
-                 predict_iter=1, autoencode=False, embeddings_path=None):
+                 min_alpha=1.0, med_alpha=10.0, max_alpha=100.0, beta=1.0,
+                 embeddings_path=None):
         """Matrix factorization recommender with weighted square loss, optimized using
         Alternating Least Squares optimization.
 
@@ -108,21 +108,17 @@ class WALSRecommender(BaseRecommender):
             updates as well, using a cached statistics of pos and negative item scores for each user
 
         TODO: update params
-        TODO: test autoencode = True
         """
         self.save_weights = save_weights
         self.latent_dim = latent_dim
         self.n_iter = n_iter
         self.l2_reg = l2_reg
         self.init_scale = init_scale
+        self.min_alpha = min_alpha
         self.med_alpha = med_alpha
         self.max_alpha = max_alpha
-        self.min_alpha = min_alpha
-        self.item_beta = item_beta
-        self.user_beta = user_beta
-        self.predict_iter = predict_iter
+        self.beta = beta
         self.embeddings_path = embeddings_path
-        self.autoencode = autoencode
         self.epsilon = 1e-3
 
         self.U = None
@@ -149,22 +145,18 @@ class WALSRecommender(BaseRecommender):
 
         other_metrics = {}
         for i in range(self.n_iter):
+            print('Evaluating...')
             self.evaluate(x_val, y_val, step=i, other_metrics=other_metrics)
             print(f'Iteration {i + 1}/{self.n_iter}')
 
-            print('Updating alpha...')
-            item_alpha = map_csr(self.item_alpha, x_train, self.U)
-            other_metrics.update(describe_sparse_rows(item_alpha, prefix='item_alpha_'))
-            print(f'Updating user vectors...')
-            if self.autoencode:
-                self.U = (x_train + item_alpha) @ self.V
-            else:
-                xtx = self.V.T @ self.V
-                self.U = solve_wols(self.V, yt=x_train, at=item_alpha, l2_reg=self.l2_reg, xtx=xtx).T
+            print('Updating user vectors...')
+            xtx = self.V.T @ self.V
+            item_alpha = self.med_alpha * (x_train > 0)
+            self.U = solve_wols(self.V, yt=x_train, at=item_alpha, l2_reg=self.l2_reg, xtx=xtx).T
             print('Updating alpha...')
             user_alpha = map_csr(self.user_alpha, x_train, self.U)
             other_metrics.update(describe_sparse_rows(user_alpha, prefix='user_alpha_'))
-            print(f'Updating item vectors...')
+            print('Updating item vectors...')
             xtx = self.U.T @ self.U
             self.V = solve_wols(self.U, yt=x_train.T, at=user_alpha.T, l2_reg=self.l2_reg, xtx=xtx).T
 
@@ -176,7 +168,7 @@ class WALSRecommender(BaseRecommender):
 
         return metrics
 
-    def compute_alpha(self, x, u, beta, neg_sample_size=None):
+    def user_alpha(self, x, u, neg_sample_size=None):
         """Given a user, compute item-specific weights, for all positives
         and return a sparse vector alpha[pos] = w_pos - 1.
 
@@ -186,7 +178,7 @@ class WALSRecommender(BaseRecommender):
         """
         med_w = self.med_alpha + 1
         pos = (x > 0).toarray().flatten()
-        if u is not None and beta > 0:
+        if u is not None and self.beta > 0:
             min_w, max_w = self.min_alpha + 1, self.max_alpha + 1
             neg = np.logical_not(pos)
             if neg_sample_size is not None:
@@ -198,7 +190,7 @@ class WALSRecommender(BaseRecommender):
             m_neg, s_neg = q1_neg, q3_neg - q2_neg
             p_pos = cauchy(m_neg, s_neg).pdf(y_pos)
             w_pos = p_pos / np.maximum(1. - y_pos, self.epsilon)
-            w_pos = w_pos ** beta  # compress
+            w_pos = w_pos ** self.beta  # compress
             m = np.median(w_pos) + self.epsilon
             w_pos = w_pos * med_w / m  # scale
             w_pos[w_pos > max_w] = max_w  # cap
@@ -210,40 +202,14 @@ class WALSRecommender(BaseRecommender):
 
         return a
 
-    def item_alpha(self, x, u, neg_sample_size=None):
+    def predict(self, x, y=None):
 
-        return self.compute_alpha(x, u, beta=self.item_beta, neg_sample_size=neg_sample_size)
-
-    def user_alpha(self, x, u, neg_sample_size=None):
-
-        return self.compute_alpha(x, u, beta=self.user_beta, neg_sample_size=neg_sample_size)
-
-    def predict(self, x, y=None, n_iter=1):
-        """TODO: n_iter > 1 only makes sense when item_beta > 0. Add check?
-        """
-        n_users = x.shape[0]
-        u = [None] * n_users
         xtx = self.V.T @ self.V
-        for _ in range(n_iter):
-            sparse_alpha = map_csr(self.item_alpha, x, u, verbose=False)
-            u = solve_wols(self.V, yt=x, at=sparse_alpha, l2_reg=self.l2_reg, xtx=xtx, verbose=False).T
+        item_alpha = self.med_alpha * (x > 0)
+        u = solve_wols(self.V, yt=x, at=item_alpha, l2_reg=self.l2_reg, xtx=xtx, verbose=False).T
         y_pred = u @ self.V.T
 
         return y_pred, np.nan
-
-    def evaluate(self, x_val, y_val, step, min_predict_iter=1, other_metrics={}, test=False):
-
-        metrics = {}
-        if min_predict_iter is None:
-            min_predict_iter = self.predict_iter
-        for predict_iter in range(min_predict_iter, self.predict_iter + 1):
-            print(f'Evaluating ({predict_iter - min_predict_iter  + 1}/{self.predict_iter - min_predict_iter + 1}) '
-                  f'(n_iter = {predict_iter})...')
-            metrics = super().evaluate(x_val, y_val, step=step + predict_iter / 10,
-                                       predict_kwargs={'n_iter': predict_iter},
-                                       other_metrics=other_metrics, test=test)
-        return metrics
-
 
 
 @gin.configurable
@@ -331,10 +297,10 @@ def solve_wols(x, yt, at, l2_reg=100, xtx=None, verbose=True):
     where * denotes element-wise multiplication.
 
     Or equivalently, compute for each column y_i of Y:
-        argmin_b_i | W_i (X b_i - y_i) |^2 + reg
-    where W_i := diagM(W[:, i]) a diagonal matrix,
-    using the closed-form solution
+        argmin_b_i | w_i (X b_i - y_i) |^2 + reg
+    using the closed form
         b_i = (X.T W_i X + l2_reg * I) X.T W_i y
+    where W_i := diagM(W[:, i]) a diagonal matrix
 
     Use parameter `yt` and `at` to specify Y.T and W.T = at + 1
     Either of these may be a passed as a generator.
@@ -354,7 +320,8 @@ def solve_wols(x, yt, at, l2_reg=100, xtx=None, verbose=True):
 
 def solve_wols_col(x, yt_i, at_i, l2_reg, xtx=None):
     """Solve the weighted Ordinary Least Squares problem
-    for one row.
+        argmin_b | w (X b - y) |^2 + reg
+    for one target.
     """
     a_i, y_i = at_i.T, yt_i.T
 

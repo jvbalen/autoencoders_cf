@@ -33,7 +33,7 @@ class BaseRecommender(object):
         """
         return x, np.nan
 
-    def evaluate(self, x_val, y_val, predict_kwargs={}, other_metrics=None, step=None, test=False):
+    def evaluate(self, x_val, y_val, other_metrics=None, step=None, test=False):
         """Evaluate model on observed and unobserved validation data x_val, y_val
 
         - x_val (2d-array or similar): input data
@@ -46,7 +46,7 @@ class BaseRecommender(object):
         batch_metrics = defaultdict(list)
         for x, y in gen_batches(x_val, y_val, batch_size=self.batch_size, exact=self.exact_batches):
             t1 = time.perf_counter()
-            y_pred, loss = self.predict(x, y, **predict_kwargs)
+            y_pred, loss = self.predict(x, y)
             prediction_time += time.perf_counter() - t1
             batch_metrics['nnz'].extend(count_nonzero(y_pred))
             batch_metrics['fin'].extend(count_finite(y_pred))
@@ -64,8 +64,6 @@ class BaseRecommender(object):
         metrics['prediction_time'] = prediction_time
         if other_metrics:
             metrics.update(other_metrics)
-        if predict_kwargs:
-            metrics.update({f'predict_kwargs.{k}': v for k, v in predict_kwargs.items()})  # save those as well
         if self.logger is not None:
             self.logger.log_config(gin.operative_config_str())
             self.logger.log_metrics(metrics, config=gin.operative_config_str(), step=step, test=test)
