@@ -148,12 +148,20 @@ class WALSRecommender(BaseRecommender):
             self.evaluate(x_val, y_val, step=i, other_metrics=other_metrics)
             print(f'Iteration {i + 1}/{self.n_iter}')
 
+            print('Updating alpha...')
+            alpha, y = self.compute_alpha_y(x_train)
+            other_metrics.update(describe_sparse_rows(alpha, prefix='item_alpha_'))
+            other_metrics.update(describe_sparse_rows(y, prefix='item_y_'))
+
             print('Updating user vectors...')
             xtx = self.V.T @ self.V
-            item_alpha = self.med_alpha * (x_train > 0)
-            self.U = solve_wols(self.V, yt=x_train, at=item_alpha, l2_reg=self.l2_reg, xtx=xtx).T
+            self.U = solve_wols(self.V, yt=y, at=alpha, l2_reg=self.l2_reg, xtx=xtx).T
+
+            print('Evaluating...')
+            self.evaluate(x_val, y_val, step=i + 0.5, other_metrics=other_metrics)
+
             print('Updating alpha...')
-            alpha, y = self.alpha_and_targets(x_train)
+            alpha, y = self.compute_alpha_y(x_train)
             other_metrics.update(describe_sparse_rows(alpha, prefix='user_alpha_'))
             other_metrics.update(describe_sparse_rows(y, prefix='user_y_'))
             print('Updating item vectors...')
@@ -168,50 +176,45 @@ class WALSRecommender(BaseRecommender):
 
         return metrics
 
-    def alpha_and_targets(self, x_train):
+    def compute_alpha_y(self, x_train, thr=1.0):
 
+        y_rows = []
         alpha_rows = []
-        r_rows = []
-
         for x, u in zip(x_train, tqdm(self.U)):
             pos = (x > 0).toarray().flatten()
             w_med = self.med_alpha + 1.
             w_min, w_max = self.min_alpha + 1, self.max_alpha + 1
             neg = np.logical_not(pos)
 
-            y_pos = u @ self.V[pos].T
-            y_neg = u @ self.V[neg].T
-            q1_neg, q2_neg, q3_neg = np.quantile(y_neg, [0.5, 0.625, 0.875])
+            uv_pos = u @ self.V[pos].T
+            uv_neg = u @ self.V[neg].T
+            q1_neg, q2_neg, q3_neg = np.quantile(uv_neg, [0.5, 0.625, 0.875])
             m_neg, s_neg = q1_neg, q3_neg - q2_neg
-            min_y = m_neg + self.epsilon  # m_neg + s_neg? seems to help make r ~ y monotonic
+            min_uv = m_neg + thr * s_neg  # high-ish thr ~ 1 seems to help make y ~ uv monotonic
 
-            # threshold y (rank-loss is non-convex below m_neg, no useful w, r)
-            y_pos[y_pos < min_y] = min_y
+            # compute w, step from thresholded uv (rank-loss is non-convex below m_neg, no useful w, y)
+            uv_pos_thr = uv_pos.copy()
+            uv_pos_thr[uv_pos_thr < min_uv] = min_uv
 
-            # first and second derivates of CDF-based ranking loss f = -cauchy(m_neg, s_neg).cdf
-            g_pos = -cauchy(m_neg, s_neg).pdf(y_pos)
-            h_pos = 2 * np.pi * g_pos ** 2 * (y_pos - m_neg) / s_neg
-
-            # leading coeficient and argmin of deg-2 taylor expansion
-            w_pos = h_pos / 2
-            r_pos = y_pos - g_pos / h_pos
+            p_pos = -cauchy(m_neg, s_neg).pdf(uv_pos_thr)
+            w_pos = np.pi * p_pos ** 2 * (uv_pos_thr - m_neg) / s_neg
+            step = - s_neg / (np.pi * p_pos * (uv_pos_thr - m_neg))
+            y_pos = uv_pos + step
 
             # scale, cap and threshold weights
             w_pos = w_pos * w_med / np.median(w_pos)
             w_pos[w_pos > w_max] = w_max
             w_pos[w_pos < w_min] = w_min
 
-            # construct sparse alpha, r
-            a, r = x.copy(), x.copy()
+            # construct sparse alpha, y
+            a, y = x.copy(), x.copy()
             a[0, pos] = w_pos - 1.
-            r[0, pos] = r_pos
+            y[0, pos] = y_pos
 
             alpha_rows.append(a)
-            r_rows.append(r)
-        alpha = vstack(alpha_rows)
-        r = vstack(r_rows)
+            y_rows.append(y)
 
-        return alpha, r
+        return vstack(alpha_rows), vstack(y_rows)
 
     def predict(self, x, y=None):
 
