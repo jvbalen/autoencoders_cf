@@ -81,7 +81,7 @@ class WALSRecommender(BaseRecommender):
 
     def __init__(self, log_dir, batch_size=70, save_weights=True,
                  latent_dim=50, n_iter=20, l2_reg=10., init_scale=0.1,
-                 min_alpha=1.0, med_alpha=10.0, max_alpha=100.0, beta=1.0,
+                 min_alpha=0.0, med_alpha=10.0, max_alpha=100.0,
                  embeddings_path=None):
         """Matrix factorization recommender with weighted square loss, optimized using
         Alternating Least Squares optimization.
@@ -117,7 +117,6 @@ class WALSRecommender(BaseRecommender):
         self.min_alpha = min_alpha
         self.med_alpha = med_alpha
         self.max_alpha = max_alpha
-        self.beta = beta
         self.embeddings_path = embeddings_path
         self.epsilon = 1e-3
 
@@ -154,11 +153,12 @@ class WALSRecommender(BaseRecommender):
             item_alpha = self.med_alpha * (x_train > 0)
             self.U = solve_wols(self.V, yt=x_train, at=item_alpha, l2_reg=self.l2_reg, xtx=xtx).T
             print('Updating alpha...')
-            user_alpha = map_csr(self.user_alpha, x_train, self.U)
-            other_metrics.update(describe_sparse_rows(user_alpha, prefix='user_alpha_'))
+            alpha, y = self.alpha_and_targets(x_train)
+            other_metrics.update(describe_sparse_rows(alpha, prefix='user_alpha_'))
+            other_metrics.update(describe_sparse_rows(y, prefix='user_y_'))
             print('Updating item vectors...')
             xtx = self.U.T @ self.U
-            self.V = solve_wols(self.U, yt=x_train.T, at=user_alpha.T, l2_reg=self.l2_reg, xtx=xtx).T
+            self.V = solve_wols(self.U, yt=y.T, at=alpha.T, l2_reg=self.l2_reg, xtx=xtx).T
 
             if self.save_weights and self.logger is not None:
                 self.logger.save_weights(None, other={'U': self.U, 'V': self.V})
@@ -168,39 +168,50 @@ class WALSRecommender(BaseRecommender):
 
         return metrics
 
-    def user_alpha(self, x, u, neg_sample_size=None):
-        """Given a user, compute item-specific weights, for all positives
-        and return a sparse vector alpha[pos] = w_pos - 1.
+    def alpha_and_targets(self, x_train):
 
-        NOTE: for beta > 0, this used to return w_pos as alpha instead of w_pos - 1
-        and cap at w = a_min, a_med, a_max instead of a_* + 1
-        in case we ever want to revert to that
-        """
-        med_w = self.med_alpha + 1
-        pos = (x > 0).toarray().flatten()
-        if u is not None and self.beta > 0:
-            min_w, max_w = self.min_alpha + 1, self.max_alpha + 1
+        alpha_rows = []
+        r_rows = []
+
+        for x, u in zip(x_train, tqdm(self.U)):
+            pos = (x > 0).toarray().flatten()
+            w_med = self.med_alpha + 1.
+            w_min, w_max = self.min_alpha + 1, self.max_alpha + 1
             neg = np.logical_not(pos)
-            if neg_sample_size is not None:
-                neg = np.random.choice(np.where(neg)[0], size=neg_sample_size)
 
             y_pos = u @ self.V[pos].T
             y_neg = u @ self.V[neg].T
             q1_neg, q2_neg, q3_neg = np.quantile(y_neg, [0.5, 0.625, 0.875])
             m_neg, s_neg = q1_neg, q3_neg - q2_neg
-            p_pos = cauchy(m_neg, s_neg).pdf(y_pos)
-            w_pos = p_pos / np.maximum(1. - y_pos, self.epsilon)
-            w_pos = w_pos ** self.beta  # compress
-            m = np.median(w_pos) + self.epsilon
-            w_pos = w_pos * med_w / m  # scale
-            w_pos[w_pos > max_w] = max_w  # cap
-            w_pos[w_pos < min_w] = min_w  # threshold
-        else:
-            w_pos = med_w
-        a = x.copy()
-        a[0, pos] = w_pos - 1.
+            min_y = m_neg + self.epsilon  # m_neg + s_neg? seems to help make r ~ y monotonic
 
-        return a
+            # threshold y (rank-loss is non-convex below m_neg, no useful w, r)
+            y_pos[y_pos < min_y] = min_y
+
+            # first and second derivates of CDF-based ranking loss f = -cauchy(m_neg, s_neg).cdf
+            g_pos = -cauchy(m_neg, s_neg).pdf(y_pos)
+            h_pos = 2 * np.pi * g_pos ** 2 * (y_pos - m_neg) / s_neg
+
+            # leading coeficient and argmin of deg-2 taylor expansion
+            w_pos = h_pos / 2
+            r_pos = y_pos - g_pos / h_pos
+
+            # scale, cap and threshold weights
+            w_pos = w_pos * w_med / np.median(w_pos)
+            w_pos[w_pos > w_max] = w_max
+            w_pos[w_pos < w_min] = w_min
+
+            # construct sparse alpha, r
+            a, r = x.copy(), x.copy()
+            a[0, pos] = w_pos - 1.
+            r[0, pos] = r_pos
+
+            alpha_rows.append(a)
+            r_rows.append(r)
+        alpha = vstack(alpha_rows)
+        r = vstack(r_rows)
+
+        return alpha, r
 
     def predict(self, x, y=None):
 
