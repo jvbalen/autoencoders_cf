@@ -182,7 +182,6 @@ class WALSRecommender(BaseRecommender):
         alpha_rows = []
         for x, u in zip(x_train, tqdm(self.U)):
             pos = (x > 0).toarray().flatten()
-            w_med = self.med_alpha + 1.
             w_min, w_max = self.min_alpha + 1, self.max_alpha + 1
             neg = np.logical_not(pos)
 
@@ -190,19 +189,14 @@ class WALSRecommender(BaseRecommender):
             uv_neg = u @ self.V[neg].T
             q1_neg, q2_neg, q3_neg = np.quantile(uv_neg, [0.5, 0.625, 0.875])
             m_neg, s_neg = q1_neg, q3_neg - q2_neg
-            min_uv = m_neg + thr * s_neg  # high-ish thr ~ 1 seems to help make y ~ uv monotonic
 
-            # compute w, step from thresholded uv (rank-loss is non-convex below m_neg, no useful w, y)
-            uv_pos_thr = uv_pos.copy()
-            uv_pos_thr[uv_pos_thr < min_uv] = min_uv
-
-            p_pos = -cauchy(m_neg, s_neg).pdf(uv_pos_thr)
-            w_pos = np.pi * p_pos ** 2 * (uv_pos_thr - m_neg) / s_neg
-            step = - s_neg / (np.pi * p_pos * (uv_pos_thr - m_neg))
-            y_pos = uv_pos + step
+            f_pos = 1.0 - cauchy(m_neg, s_neg).cdf(uv_pos)
+            g_pos = -cauchy(m_neg, s_neg).pdf(uv_pos)
+            y_pos = uv_pos - 2 * f_pos / g_pos
+            w_pos = f_pos / (uv_pos - y_pos)**2
 
             # scale, cap and threshold weights
-            w_pos = w_pos * w_med / np.median(w_pos)
+            w_pos *= self.alpha_scale + 1.
             w_pos[w_pos > w_max] = w_max
             w_pos[w_pos < w_min] = w_min
 
