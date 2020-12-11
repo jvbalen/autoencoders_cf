@@ -103,7 +103,6 @@ class WALSRecommender(BaseRecommender):
         - init_scale (float): draw initial user and item vectors using a standard-normal distribution
             with this scale
         - med_alpha (float): if beta == 0, use Hu's W-ALS weighting with this alpha
-        - beta (float):
         - cache_statistics (bool): if True, use discordance weighting during item factor
             updates as well, using a cached statistics of pos and negative item scores for each user
 
@@ -123,7 +122,7 @@ class WALSRecommender(BaseRecommender):
         self.V = None
 
         super().__init__(log_dir, batch_size=batch_size)
-        assert self.Logger is not None
+        assert self.logger is not None
 
     def train(self, x_train, y_train, x_val, y_val):
         """Train and evaluate
@@ -134,6 +133,7 @@ class WALSRecommender(BaseRecommender):
         t1 = time.perf_counter()
         print('Initializing U, V...')
         x_train = x_train.tocsr()
+        n_users, n_items = x_train.shape
         if self.embeddings_path:
             npz_data = np.load(self.embeddings_path)
             self.U, self.V = npz_data['U'], npz_data['V']
@@ -148,15 +148,19 @@ class WALSRecommender(BaseRecommender):
         for i in range(self.n_iter):
             print(f'Iteration {i + 1}/{self.n_iter}')
             print('Updating user vectors...')
-            alpha = self.med_alpha * x_train
-            self.U = solve_wols(self.V, yt=x_train, at=alpha, l2_reg=self.l2_reg).T
+            alpha = self.med_alpha * x_train if self.med_alpha else None
+            self.U = solve_ols(self.V, yt=x_train, at=alpha, l2_reg=self.l2_reg, n_cols=n_users).T
 
             print('Computing weights, y...')
-            alpha, y = self.compute_wy(x_train)
-            other_metrics.update(describe_sparse_rows(alpha, prefix='alpha_'))
-            other_metrics.update(describe_sparse_rows(y, prefix='y_'))
+            if self.med_alpha:
+                alpha, y = self.compute_wy(x_train)
+                other_metrics.update(describe_sparse_rows(alpha, prefix='alpha_'))
+                other_metrics.update(describe_sparse_rows(y, prefix='y_'))
+                at, yt = alpha.Τ, y.Τ
+            else:
+                at, yt = None, x_train.T
             print('Updating item vectors...')
-            self.V = solve_wols(self.U, yt=y.T, at=alpha.T, l2_reg=self.l2_reg).T
+            self.V = solve_ols(self.U, yt=yt, at=at, l2_reg=self.l2_reg, n_cols=n_items).T
 
             print('Evaluating...')
             dt = time.perf_counter() - t1
@@ -209,8 +213,8 @@ class WALSRecommender(BaseRecommender):
 
     def predict(self, x, y=None):
 
-        alpha = self.med_alpha * x
-        u = solve_wols(self.V, yt=x, at=alpha, l2_reg=self.l2_reg, verbose=False).T
+        alpha = self.med_alpha * x if self.med_alpha else None
+        u = solve_ols(self.V, yt=x, at=alpha, l2_reg=self.l2_reg, verbose=False).T
         y_pred = u @ self.V.T
 
         return y_pred, np.nan
@@ -244,8 +248,8 @@ class WSLIMRecommender(BaseRecommender):
         t1 = time.perf_counter()
 
         clock.interval('Solving for S, using sparse approximation')
-        wt = (self.beta + x_col.toarray().flatten() * self.alpha for x_col in x_train.T)
-        self.S = solve_wols(x_train, yt=x_train.T, wt=wt, l2_reg=self.l2_reg, row_nnz=self.row_nnz)
+        at = (self.beta + x_col.toarray().flatten() * self.alpha - 1. for x_col in x_train.T)
+        self.S = solve_ols(x_train, yt=x_train.T, wt=at, l2_reg=self.l2_reg, row_nnz=self.row_nnz)
 
         if self.target_density < 1.0:
             self.S = prune_global(self.S, target_density=self.target_density)
@@ -269,33 +273,7 @@ class WSLIMRecommender(BaseRecommender):
         return y_pred, np.nan
 
 
-def solve_ols(x, y, l2_reg=100., zero_diag=False, verbose=False):
-    """Compute argmin_b |XB - Y|^2
-    """
-    if verbose:
-        print(f'    np.isfinite(x).mean() = {np.isfinite(x.data).mean()}')
-        print(f'    np.isfinite(y).mean() = {np.isfinite(y.data).mean()}')
-    xtx = x.T @ x
-    xty = x.T @ y
-    if issparse(xtx):
-        xtx = xtx.toarray()
-    if issparse(xty):
-        xty = xty.toarray()
-    diag_indices = np.diag_indices(xtx.shape[0])
-    xtx[diag_indices] += l2_reg
-    xtx_inv = np.linalg.inv(xtx)
-    b = xtx_inv @ xty
-    if zero_diag:
-        b -= xtx_inv * (np.diag(b) / np.diag(xtx_inv))
-    if verbose:
-        print(f'    np.isfinite(b).mean() = {np.isfinite(b).mean()}')
-        print(f'    np.abs(b).min() = {np.abs(b).min()}')
-        print(f'    np.abs(b).max() = {np.abs(b).max()}')
-
-    return b
-
-
-def solve_wols(x, yt, at, l2_reg=100, verbose=True):
+def solve_ols(x, yt, at=None, l2_reg=100., verbose=False, n_cols=None):
     """Solve the weighted Ordinary Least Squares problem:
         argmin_B | W * (X B - Y) |^2
     where * denotes element-wise multiplication.
@@ -312,11 +290,26 @@ def solve_wols(x, yt, at, l2_reg=100, verbose=True):
     try:
         n_cols = yt.shape[0]
     except AttributeError:
-        n_cols = None
+        pass
+
     xtx = x.T @ x
-    gen = tqdm(zip(yt.tocsr(), at.tocsr()), total=n_cols, disable=not verbose)
-    cols = [solve_wols_col(x, yt_i, at_i, l2_reg=l2_reg, xtx=xtx) for yt_i, at_i in gen]
-    return np.hstack(cols)
+    if at is None:
+        xty = x.T @ yt.T
+        if issparse(xtx):
+            xtx = xtx.toarray()
+        if issparse(xty):
+            xty = xty.toarray()
+        diag_indices = np.diag_indices(xtx.shape[0])
+        xtx[diag_indices] += l2_reg
+        xtx_inv = np.linalg.inv(xtx)
+        b = xtx_inv @ xty
+    else:
+        xtx = x.T @ x
+        gen = tqdm(zip(yt.tocsr(), at.tocsr()), total=n_cols, disable=not verbose)
+        cols = [solve_wols_col(x, yt_i, at_i, l2_reg=l2_reg, xtx=xtx) for yt_i, at_i in gen]
+        b = np.hstack(cols)
+
+    return b
 
 
 def solve_wols_col(x, yt_i, at_i, l2_reg, xtx=None):
