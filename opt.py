@@ -56,45 +56,32 @@ def least_squares_cg(Cui, X, Y, regularization, num_threads=0, cg_steps=3):
         X[u] = x
 
 
-def compute_wy(pred, mu, sigma, cauchy=False, hinge_loss=False):
-
-    z = (pred - mu) / sigma
-    if cauchy:
-        pdf = 1 / (1 + z ** 2) / np.pi / sigma
-        cdf = np.arctan(z) / np.pi + 0.5
-    else:
-        exp_min_z = np.exp(-z)
-        pdf = exp_min_z / (1 + exp_min_z) ** 2 / sigma
-        cdf = 1 / (1 + exp_min_z)
-    if hinge_loss:
-        exp_min_rev_z = np.exp(-(-pred - mu) / sigma)
-        loss = np.log1p(np.exp(-np.abs(exp_min_rev_z))) + np.maximum(exp_min_rev_z, 0)  # ccdf(-pred)
-        grad = -cdf
-    else:
-        loss = 1. - cdf
-        grad = -pdf
-    weight = (grad ** 2) / (4 * loss)
-    target = pred - 2 * loss / grad
-
-    return weight, target
-
-
 def rank_least_squares_cg(Cui, X, Y, mu, sigma, regularization,
                           min_weight=0, max_weight=60, min_target=0, max_target=10,
-                          num_threads=0, cg_steps=3, cauchy=False, hinge_loss=False, seed=42):
-
+                          num_threads=0, cg_steps=3, cauchy=False, hinge_loss=False, seed=42,
+                          no_rank=False):
+    """This is a reference implementation in python of the cython extension with the same name,
+    so that we can test for consistency.
+    """
     if not isinstance(Cui, csr_matrix):
         raise ValueError('Cui must be a sparse matrix in CSR format')
     users, factors = X.shape
     n_probe = 1000
 
+    # it is convenient for the absolute scale of returned weights (as measured by their median)
+    # to be independent of the data. Therefore we estimate the median 'new' weights first from a
+    # few random users (below) and compute a simple correcting factor `weight_scale`
+    # that we can use later to scale them to the median of the weights given by Cui
     weight_scales = list()
     np.random.seed(seed)
     for u in np.random.choice(users, n_probe):
         x = X[u]
         for i, confidence in nonzeros(Cui, u):
             pred = Y[i].dot(x)
-            weight, _ = compute_wy(pred, mu[u], sigma[u], cauchy=cauchy, hinge_loss=hinge_loss)
+            if no_rank:
+                weight, target = 1.0, 1.0
+            else:
+                weight, _ = compute_wy(pred, mu[u], sigma[u], cauchy=cauchy, hinge_loss=hinge_loss)
             weight_scales.append((confidence + 1) / weight)
     weight_scale = np.median(weight_scales)
 
@@ -109,7 +96,10 @@ def rank_least_squares_cg(Cui, X, Y, mu, sigma, regularization,
             pred = Y[i].dot(x)
 
             # NEW: calculate weight, target from pred, mu, sigma
-            weight, target = compute_wy(pred, mu[u], sigma[u], cauchy=cauchy, hinge_loss=hinge_loss)
+            if no_rank:
+                weight, target = 1.0, 1.0
+            else:
+                weight, target = compute_wy(pred, mu[u], sigma[u], cauchy=cauchy, hinge_loss=hinge_loss)
             if confidence > 0:
                 confidence = min(max_weight - 1, max(min_weight - 1, weight_scale * weight - 1))
                 target = min(max_target, max(min_target, target))
@@ -124,7 +114,7 @@ def rank_least_squares_cg(Cui, X, Y, mu, sigma, regularization,
         if rsold < 1e-20:
             continue
 
-        for it in range(cg_steps):
+        for _ in range(cg_steps):
             # calculate Ap = YtCuYp - without actually calculating YtCuY
             Ap = YtY.dot(p)
             for i, confidence in nonzeros(Cui, u):
@@ -144,3 +134,35 @@ def rank_least_squares_cg(Cui, X, Y, mu, sigma, regularization,
             rsold = rsnew
 
         X[u] = x
+
+
+def compute_wy(pred, mu, sigma, cauchy=False, hinge_loss=False):
+    """Given the predicted scores for a user's "positives" (items they interacted with),
+    and the mean and standard deviation of the user's scores for a sample of "negatives",
+    compute the weights and targets that should be used during the
+    next least squares step of an alternating least squares recommender,
+    such that its square loss approximates a (hinge or discordance-based) ranking loss.
+    """
+    z = (pred - mu) / sigma
+
+    # compute PDF, CDF
+    if cauchy:
+        pdf = 1 / (1 + z ** 2) / np.pi / sigma
+        cdf = np.arctan(z) / np.pi + 0.5
+    else:
+        exp_min_z = np.exp(-z)
+        pdf = exp_min_z / (1 + exp_min_z) ** 2 / sigma
+        cdf = 1 / (1 + exp_min_z)
+
+    # from PDF, CDF, compute expected hinge / discordance loss
+    if hinge_loss:
+        exp_min_rev_z = np.exp(-(-pred - mu) / sigma)
+        loss = np.log1p(np.exp(-np.abs(exp_min_rev_z))) + np.maximum(exp_min_rev_z, 0)  # ccdf(-pred)
+        grad = -cdf
+    else:
+        loss = 1. - cdf
+        grad = -pdf
+    weight = (grad ** 2) / (4 * loss)
+    target = pred - 2 * loss / grad
+
+    return weight, target

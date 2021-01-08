@@ -159,6 +159,7 @@ class WALSRecommender(BaseRecommender):
                     raise NotImplementedError()
                 # update U (in-place)
                 least_squares_cg(conf_u, self.U, self.V, regularization=self.l2_reg, cg_steps=self.cg_steps)
+
                 # update V (in-place)
                 if self.dynamic_weights and self.dynamic_targets:
                     mu, sigma = self.compute_mu_sigma(x_train)
@@ -174,12 +175,12 @@ class WALSRecommender(BaseRecommender):
                 continue
 
             print('Updating user vectors...')
-            self.U = solve_ols(self.V, yt=x_train, at=conf_v, l2_reg=self.l2_reg, n_cols=n_users).T
+            self.U = solve_ols(self.V, yt=x_train, at=conf_u, l2_reg=self.l2_reg, n_cols=n_users).T
 
             print('Computing weights, y...')
             conf_vt, y = self.compute_wy(x_train)
             conf_v, yt = None, y.T.tocsr()
-            if conf_v is not None:
+            if conf_vt is not None:
                 other_metrics.update(describe_sparse_rows(conf_vt, prefix='alpha_'))
                 other_metrics.update(describe_sparse_rows(y, prefix='y_'))
                 conf_v = conf_vt.T.tocsr()
@@ -206,6 +207,8 @@ class WALSRecommender(BaseRecommender):
         if self.embeddings_path:
             npz_data = np.load(self.embeddings_path)
             self.U, self.V = npz_data.get('U', None), npz_data['V']
+            assert self.U.shape[0] == n_users, "Embeddings loaded but n_users doesn't match."
+            assert self.V.shape[0] == n_items, "Embeddings loaded but n_items doesn't match."
             assert self.V.shape[1] == self.latent_dim, "Embeddings loaded but latent_dim doesn't match."
         else:
             self.V = np.random.randn(n_items, self.latent_dim) * self.init_scale
@@ -224,11 +227,11 @@ class WALSRecommender(BaseRecommender):
             sample = np.random.choice(n_items, n_sample)
             scores = self.U[inds] @ self.V[sample].T
             if self.score_dist == 'cauchy':
-                q1_neg, q2_neg, q3_neg = np.quantile(scores, [0.5, 0.625, 0.875], axis=1)
+                q1_neg, q2_neg, q3_neg = np.quantile(scores, [0.5, 0.625, 0.875], axis=-1)
                 mu[inds], sigma[inds] = q1_neg, q3_neg - q2_neg
             elif self.score_dist == 'logistic':
                 mu[inds] = np.mean(scores, axis=1)
-                sigma[inds] = np.sqrt(3) / np.pi * np.std(sample, axis=1)
+                sigma[inds] = np.sqrt(3) / np.pi * np.std(sample, axis=-1)
             else:
                 raise NotImplementedError()
 
@@ -289,10 +292,10 @@ class WALSRecommender(BaseRecommender):
         else:
             raise NotImplementedError()
 
-        if self.min_y is not None:
-            y_pos = np.maximum(y_pos, self.min_y)
-        if self.max_y is not None:
-            y_pos = np.minimum(y_pos, self.max_y)
+        if self.min_target is not None:
+            y_pos = np.maximum(y_pos, self.min_target)
+        if self.max_target is not None:
+            y_pos = np.minimum(y_pos, self.max_target)
 
         return w_pos, y_pos
 
@@ -320,13 +323,13 @@ class WALSRecommender(BaseRecommender):
         """
         ccdf = None  # if loss (e.g. hinge) requires \int cdf, use logistic
         if self.score_dist == 'cauchy':
-            q1_neg, q2_neg, q3_neg = np.quantile(sample, [0.5, 0.625, 0.875], axis=-1)
+            q1_neg, q2_neg, q3_neg = np.quantile(sample, [0.5, 0.625, 0.875])
             dist = cauchy(q1_neg, q3_neg - q2_neg)
         elif self.score_dist == 'normal':
-            m_neg, s_neg = np.mean(sample, axis=-1), np.std(sample, axis=-1)
+            m_neg, s_neg = np.mean(sample), np.std(sample)
             dist = norm(m_neg, s_neg)
         elif self.score_dist == 'logistic':
-            m_neg, s_neg = np.mean(sample, axis=-1), np.sqrt(3) / np.pi * np.std(sample, axis=-1)
+            m_neg, s_neg = np.mean(sample), np.sqrt(3) / np.pi * np.std(sample)
             dist = logistic(m_neg, s_neg)
             ccdf = partial(softplus, m=m_neg, s=s_neg)
         else:
@@ -339,7 +342,7 @@ class WALSRecommender(BaseRecommender):
         w = (self.alpha + 1.) * (w / np.nanmedian(w))
         w[w > self.max_weight] = self.max_weight  # cap
         w[w < self.min_weight] = self.min_weight  # threshold
-        w[np.isnan(w)] = self.max_alpha + 1.  # cap where nan
+        # w[np.isnan(w)] = self.max_weight  # cap where nan
 
         return w
 

@@ -1,4 +1,5 @@
-
+"""Least squares CG implementations in Cython, based on https://github.com/benfred/implicit
+"""
 import cython
 import numpy as np
 from scipy.sparse import csr_matrix
@@ -218,7 +219,7 @@ def _rank_least_squares_cg(integral[:] indptr, integral[:] indices, float[:] dat
             weight, _ = compute_wy(pred, mu[u], sigma[u], cauchy=cauchy, hinge_loss=hinge_loss)
             weight_scales.append((confidence + 1) / weight)
     weight_scale = np.median(weight_scales)
-    print(weight_scale)
+    # print(weight_scale)
 
     with nogil, parallel(num_threads=num_threads):
         # allocate temp memory for each thread
