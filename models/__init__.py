@@ -12,4 +12,5 @@ __all__ = ['LinearRecommender', 'LinearRecommenderFromFile',
            'DistilledRecommender',
            'UserFactorRecommender', 'LogisticMFRecommender',
            'PopularityRecommender',
-           'ALSRecommender', 'WSLIMRecommender']
+           'ALSRecommender', 'WSLIMRecommender',
+           ]

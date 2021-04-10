@@ -31,7 +31,7 @@ class BaseRecommender(object):
         """Predict scores.
         If y is not None, also return a loss.
         """
-        raise NotImplementedError()
+        return x, np.nan
 
     def evaluate(self, x_val, y_val, other_metrics=None, step=None, test=False):
         """Evaluate model on observed and unobserved validation data x_val, y_val
