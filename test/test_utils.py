@@ -2,7 +2,6 @@
 import numpy as np
 from scipy.sparse import csr_matrix
 from models.pairwise import sparse_inds_vals
-from models.als import map_csr
 
 
 def test_inds_vals():
@@ -30,16 +29,3 @@ def test_inds_vals():
 
     assert np.allclose(inds_expected, inds)
     assert np.allclose(vals_expected, vals)
-
-
-def test_map_csr():
-
-    def mul(x, y):
-        return x * y
-    a = np.eye(10)
-    b = np.arange(10)
-
-    ref = a * b
-    res = map_csr(mul, a, b)
-    assert type(res) is csr_matrix
-    assert np.all(res.toarray() == ref)

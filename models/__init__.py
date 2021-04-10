@@ -5,7 +5,6 @@ from models.distill import DistilledRecommender
 from models.mf import UserFactorRecommender, LogisticMFRecommender
 from models.base import PopularityRecommender
 from models.als import ALSRecommender, WSLIMRecommender
-from models.external import ImplicitRecommender
 
 __all__ = ['LinearRecommender', 'LinearRecommenderFromFile',
            'SKLRecommender',
@@ -14,4 +13,4 @@ __all__ = ['LinearRecommender', 'LinearRecommenderFromFile',
            'UserFactorRecommender', 'LogisticMFRecommender',
            'PopularityRecommender',
            'ALSRecommender', 'WSLIMRecommender',
-           'ImplicitRecommender']
+           ]
